@@ -1,0 +1,66 @@
+# Enophia Studios — otomatik deploy
+#
+# main branch'e her push'ta:
+#   1. public/js/firebase-config.js dosyasi GitHub Secrets'tan uretilir
+#   2. public/ klasoru FTP(S) ile hosta yuklenir
+#
+# Gerekli secrets (repo -> Settings -> Secrets and variables -> Actions -> New repository secret):
+#   FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID,
+#   FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID, FIREBASE_APP_ID
+#   FTP_SERVER (or. ftp.alanadin.com), FTP_USERNAME, FTP_PASSWORD
+#   FTP_SERVER_DIR (opsiyonel; varsayilan public_html/ — sonunda / olmali)
+#
+# Hostun FTPS desteklemiyorsa asagidaki "protocol: ftps" satirini "protocol: ftp" yap
+# (onerilmez — sifre sifresiz gider; once hostuna FTPS acmayi dene).
+
+name: Deploy to host
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Firebase config'i secrets'tan uret
+        run: |
+          cat > public/js/firebase-config.js <<'CONFIG'
+          'use strict';
+          /* Bu dosya GitHub Actions tarafindan deploy sirasinda uretildi.
+             Degerleri degistirmek icin: repo -> Settings -> Secrets and variables -> Actions */
+          const FIREBASE_CONFIG = {
+            apiKey: '${{ secrets.FIREBASE_API_KEY }}',
+            authDomain: '${{ secrets.FIREBASE_AUTH_DOMAIN }}',
+            projectId: '${{ secrets.FIREBASE_PROJECT_ID }}',
+            storageBucket: '${{ secrets.FIREBASE_STORAGE_BUCKET }}',
+            messagingSenderId: '${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}',
+            appId: '${{ secrets.FIREBASE_APP_ID }}',
+          };
+          CONFIG
+
+      - name: Secrets bos mu kontrol et
+        run: |
+          if grep -q "apiKey: ''" public/js/firebase-config.js; then
+            echo "::error::FIREBASE_API_KEY secret'i bos. Repo -> Settings -> Secrets and variables -> Actions kismindan Firebase secret'larini ekle."
+            exit 1
+          fi
+          echo "Firebase config hazir."
+
+      - name: Hosta yukle (FTPS)
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          local-dir: ./public/
+          server-dir: ${{ secrets.FTP_SERVER_DIR || 'public_html/' }}

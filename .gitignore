@@ -1,0 +1,7 @@
+node_modules/
+.firebase/
+*.log
+
+# Firebase config git'e girmez: yerelde example dosyasindan kopyalanir,
+# canli sitede GitHub Actions deploy sirasinda Secrets'tan uretir.
+public/js/firebase-config.js
