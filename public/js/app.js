@@ -481,9 +481,11 @@ window.addEventListener('hashchange', () => {
   if (location.hash === '#admin' || App.view.name === 'admin') onRoute();
 });
 
-(function init() {
+// Run after ALL scripts load (admin.js defines renderAdmin, which a direct
+// #admin page load needs immediately) — DOMContentLoaded guarantees that.
+document.addEventListener('DOMContentLoaded', function init() {
   // defaults render instantly; Firestore snapshot (if configured) refreshes on arrival
   App.content = clone(CONTENT_DEFAULTS);
   App.fb = initFirebase();
   onRoute();
-})();
+});
