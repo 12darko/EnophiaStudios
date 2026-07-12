@@ -8,7 +8,7 @@
 #   FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID,
 #   FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID, FIREBASE_APP_ID
 #   FTP_SERVER (or. ftp.alanadin.com), FTP_USERNAME, FTP_PASSWORD
-#   FTP_SERVER_DIR (opsiyonel; varsayilan public_html/ — sonunda / olmali)
+#   FTP_SERVER_DIR (opsiyonel; varsayilan './' = FTP'nin girdigi klasor)
 #
 # Hostun FTPS desteklemiyorsa asagidaki "protocol: ftps" satirini "protocol: ftp" yap
 # (onerilmez — sifre sifresiz gider; once hostuna FTPS acmayi dene).
@@ -63,4 +63,7 @@ jobs:
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ftps
           local-dir: ./public/
-          server-dir: ${{ secrets.FTP_SERVER_DIR || 'public_html/' }}
+          # Bu host'un FTP hesabi zaten public_html (web koku) icine giriyor,
+          # o yuzden varsayilan './' = girilen klasorun ta kendisi. Baska bir
+          # host'a tasinirsa FTP_SERVER_DIR secret'i ile klasor verilebilir.
+          server-dir: ${{ secrets.FTP_SERVER_DIR || './' }}
