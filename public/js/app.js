@@ -208,7 +208,8 @@ function renderNav() {
   const onHome = App.view.name === 'home';
   let html = '';
   if (onHome) {
-    const hasPosts = App.content && (App.content.blog || []).length > 0;
+    const uc = (App.content && App.content.updates) || {};
+    const hasPosts = App.content && (App.content.blog || []).length > 0 && uc.enabled !== false;
     html += '<a href="/#games">' + t.nav_games + '</a>'
       + (hasPosts ? '<a href="/#updates">' + t.nav_updates + '</a>' : '')
       + '<a href="/#vision">' + t.nav_vision + '</a>'
@@ -265,9 +266,11 @@ function viewHome() {
   ).join('');
 
   // "Yenilikler" — latest blog posts as a horizontal card strip (auto from blog).
-  // Only shown when there's at least one post, so it never looks empty.
+  // Shown when enabled (admin setting) AND there's at least one post.
   const posts = C.blog || [];
-  const updatesSection = posts.length ? (
+  const uCfg = C.updates || { enabled: true, count: 6 };
+  const uCount = Math.max(1, parseInt(uCfg.count, 10) || 6);
+  const updatesSection = (uCfg.enabled !== false && posts.length) ? (
     '<section id="updates" class="block" style="padding-top:64px;padding-bottom:20px;scroll-margin-top:80px;">'
     + '<div class="updates-head">'
     + '<div><h2 class="sec-title" style="margin-bottom:6px;">' + t.updates_title + '</h2>'
@@ -275,7 +278,7 @@ function viewHome() {
     + '<a href="/blog" class="btn btn-ghost-sm">' + t.updates_all + '</a>'
     + '</div>'
     + '<div class="updates-strip">'
-    + posts.slice(0, 6).map(p =>
+    + posts.slice(0, uCount).map(p =>
         '<a class="update-card" href="/blog/' + encodeURIComponent(p.slug) + '">'
         + (p.cover
             ? '<div class="update-cover" style="background-image:linear-gradient(180deg,rgba(10,12,16,0) 40%,rgba(10,12,16,0.55)),url(\'' + esc(p.cover) + '\');"></div>'

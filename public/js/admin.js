@@ -331,7 +331,14 @@ function renderPanel() {
       + fldArea(t.f_shots, 'games.' + gi + '.shots', (g.shots || []).join('\n'), 3, 'lines')
     ) : '');
 
-  const blogBody = '<div class="tabs">' + blogTabs + '</div>'
+  const uCfg = C.updates || {};
+  const sliderBody = '<div class="slider-settings">'
+    + '<div class="slider-settings-h">' + t.updates_settings_h + '</div>'
+    + '<div class="check-row" style="margin-bottom:12px;"><input type="checkbox" data-path="updates.enabled"' + (uCfg.enabled !== false ? ' checked' : '') + ' id="chk-updates"><label for="chk-updates" style="cursor:pointer;">' + t.updates_enable_label + '</label></div>'
+    + '<div class="field" style="max-width:220px;margin-bottom:0;"><label>' + t.updates_count_label + '</label><input class="input" type="number" min="1" max="12" data-path="updates.count" value="' + esc(uCfg.count != null ? uCfg.count : 6) + '"></div>'
+    + '</div>';
+
+  const blogBody = sliderBody + '<div class="tabs">' + blogTabs + '</div>'
     + (p ? (
       '<button type="button" class="mini-danger" style="margin-bottom:20px;" data-action="remove-post">' + t.admin_remove_post + '</button>'
       + fld(t.f_blog_title, 'blog.' + bi + '.title.' + al, (p.title && p.title[al]) || '')

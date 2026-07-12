@@ -60,6 +60,7 @@ const CONTENT_DEFAULTS = {
     sub: { tr: 'Bir fikir, iş birliği ya da sadece merhaba — her zaman bekleriz.', en: 'An idea, a collaboration, or just a hello — we’re always glad to hear from you.' }
   },
   blog: [],
+  updates: { enabled: true, count: 6 },   // homepage "Yenilikler" strip settings
   links: {
     itch: 'https://enophia.itch.io/',
     youtube1: 'https://www.youtube.com/@enophiastudios5117',
