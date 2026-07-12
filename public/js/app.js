@@ -208,7 +208,9 @@ function renderNav() {
   const onHome = App.view.name === 'home';
   let html = '';
   if (onHome) {
+    const hasPosts = App.content && (App.content.blog || []).length > 0;
     html += '<a href="/#games">' + t.nav_games + '</a>'
+      + (hasPosts ? '<a href="/#updates">' + t.nav_updates + '</a>' : '')
       + '<a href="/#vision">' + t.nav_vision + '</a>'
       + '<a href="/#next">' + t.nav_next + '</a>'
       + '<a href="/#press">' + t.nav_press + '</a>'
@@ -262,6 +264,32 @@ function viewHome() {
     + '</div>'
   ).join('');
 
+  // "Yenilikler" — latest blog posts as a horizontal card strip (auto from blog).
+  // Only shown when there's at least one post, so it never looks empty.
+  const posts = C.blog || [];
+  const updatesSection = posts.length ? (
+    '<section id="updates" class="block" style="padding-top:64px;padding-bottom:20px;scroll-margin-top:80px;">'
+    + '<div class="updates-head">'
+    + '<div><h2 class="sec-title" style="margin-bottom:6px;">' + t.updates_title + '</h2>'
+    + '<p class="sec-sub" style="margin-bottom:0;">' + t.updates_sub + '</p></div>'
+    + '<a href="/blog" class="btn btn-ghost-sm">' + t.updates_all + '</a>'
+    + '</div>'
+    + '<div class="updates-strip">'
+    + posts.slice(0, 6).map(p =>
+        '<a class="update-card" href="/blog/' + encodeURIComponent(p.slug) + '">'
+        + (p.cover
+            ? '<div class="update-cover" style="background-image:linear-gradient(180deg,rgba(10,12,16,0) 40%,rgba(10,12,16,0.55)),url(\'' + esc(p.cover) + '\');"></div>'
+            : '<div class="update-cover nocover"><span>' + esc(((p.title && p.title[lang]) || 'E').charAt(0)) + '</span></div>')
+        + '<div class="update-body">'
+        + '<span class="update-date">' + esc(p.date) + '</span>'
+        + '<h3>' + esc((p.title && p.title[lang]) || '') + '</h3>'
+        + '<p>' + esc((p.excerpt && p.excerpt[lang]) || '') + '</p>'
+        + '<span class="update-read">' + t.blog_read + ' →</span>'
+        + '</div></a>'
+      ).join('')
+    + '</div></section>'
+  ) : '';
+
   return '<main>'
     // HERO
     + '<section class="hero"><div class="hero-box">'
@@ -277,6 +305,8 @@ function viewHome() {
     + '<div style="margin-bottom:36px;"><h2 class="sec-title">' + t.games_title + '</h2><p class="sec-sub" style="margin-bottom:0;">' + t.games_sub + '</p></div>'
     + '<div class="games-grid">' + games.map(gameCard).join('') + '</div>'
     + '</section>'
+    // YENİLİKLER (latest posts) — auto-hidden when there are no posts
+    + updatesSection
     // VISION & MISSION
     + '<section id="vision" class="block" style="padding-top:70px;padding-bottom:70px;">'
     + '<h2 class="sec-title" style="margin-bottom:36px;">' + t.vision_title + '</h2>'
