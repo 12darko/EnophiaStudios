@@ -13,6 +13,8 @@ const Admin = {
   authWatcherOn: false,
   authReady: false,
   seedChecked: false,
+  geminiKey: '',      // cached in memory; persisted in Firestore site/secrets (admin-only)
+  aiSource: 'youtube',
 };
 
 function setPath(obj, path, value) {
@@ -100,6 +102,55 @@ async function ensureSeeded() {
       App.content = deepMerge(clone(CONTENT_DEFAULTS), snap.data());
     }
   } catch (e) { console.warn('seed/load:', e && e.code); }
+  await loadSecrets();
+}
+
+// ---------------- AI (Gemini) — key in Firestore site/secrets, calls from admin's browser ----------------
+async function loadSecrets() {
+  if (!fbDb) return;
+  try {
+    const snap = await fbDb.collection('site').doc('secrets').get();
+    if (snap.exists && snap.data().geminiKey) Admin.geminiKey = snap.data().geminiKey;
+  } catch (e) { /* rules deny read unless authed — safe to ignore */ }
+}
+
+async function saveGeminiKey(key) {
+  await fbDb.collection('site').doc('secrets').set({ geminiKey: key }, { merge: true });
+  Admin.geminiKey = key;
+}
+
+// Ask Gemini for a bilingual blog draft. source = { type:'youtube'|'topic', value }
+async function generateBlog(source) {
+  if (!Admin.geminiKey) throw new Error('no-key');
+  const instr = 'You are the devlog writer for Enophia Studios, an independent game studio. '
+    + 'Write ONE blog post and return ONLY valid minified JSON with exactly these string fields: '
+    + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en"}. '
+    + 'title: short and catchy. excerpt: 1-2 sentence summary. body: 3-6 short paragraphs, natural devlog tone, plain text (no markdown). '
+    + 'The _tr fields must be in Turkish and the _en fields in English (not translations of each other word-for-word, but the same post in each language).';
+  const parts = [];
+  let prompt = instr;
+  if (source.type === 'youtube') {
+    parts.push({ fileData: { fileUri: source.value } });
+    prompt += '\n\nWrite the post based on the linked YouTube video.';
+  } else {
+    prompt += '\n\nTopic / notes:\n' + source.value;
+  }
+  parts.push({ text: prompt });
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='
+    + encodeURIComponent(Admin.geminiKey);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.85 } }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + res.status));
+  const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content
+    && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
+    && data.candidates[0].content.parts[0].text;
+  if (!txt) throw new Error('empty response');
+  try { return JSON.parse(txt); }
+  catch (e) { return JSON.parse(txt.replace(/```json|```/g, '').trim()); }
 }
 
 // ---------------- Firebase not configured yet: show setup steps ----------------
@@ -214,6 +265,116 @@ function renderPanel() {
 
   const userEmail = (fbAuth.currentUser && fbAuth.currentUser.email) || '';
 
+  // section builder: id anchor + numbered header (clearer separation, more air)
+  const sec = (id, n, icon, title, body, headExtra) =>
+    '<section class="admin-section" id="sec-' + id + '">'
+    + '<h2 class="sec-h"><span class="sec-num">' + n + '</span>'
+    + '<span class="icon"' + (headExtra || '') + '>' + icon + '</span>' + title + '</h2>'
+    + body + '</section>';
+
+  const navItems = [
+    ['hero', t.admin_s_hero], ['about', t.admin_s_about], ['next', t.admin_s_next],
+    ['team', t.team_title], ['contact', t.admin_s_contact], ['links', t.admin_s_links],
+    ['games', t.admin_s_games], ['ai', t.admin_s_ai], ['blog', t.admin_s_blog],
+    ['security', t.admin_s_security],
+  ];
+  const navHtml = navItems.map(x =>
+    '<button type="button" class="nav-chip" data-action="jump" data-target="sec-' + x[0] + '">' + x[1] + '</button>'
+  ).join('');
+
+  // ---- section bodies ----
+  const heroBody = fld(t.f_hero_title, 'hero.title.' + al, C.hero.title[al])
+    + fldArea(t.f_hero_sub, 'hero.sub.' + al, C.hero.sub[al], 3);
+
+  const aboutBody = fldArea(t.vision_h, 'vision.' + al, C.vision[al], 3)
+    + fldArea(t.mission_h, 'mission.' + al, C.mission[al], 3)
+    + fldArea(t.f_story, 'story.' + al, C.story[al], 3)
+    + fldArea(t.f_about_lead, 'about.lead.' + al, C.about.lead[al], 2);
+
+  const nextBody = nextRows
+    + '<button type="button" class="mini-add" data-action="add-next">' + t.admin_add_next + '</button>';
+
+  const teamBody = teamRows
+    + '<button type="button" class="mini-add" data-action="add-member">' + t.admin_add_member + '</button>';
+
+  const contactBody = fldArea(t.f_contact_sub, 'contact.sub.' + al, C.contact.sub[al], 2);
+
+  const linksBody = fld('itch.io', 'links.itch', C.links.itch)
+    + fld('E-mail', 'links.email', C.links.email)
+    + fld('YouTube 1', 'links.youtube1', C.links.youtube1)
+    + fld('YouTube 2', 'links.youtube2', C.links.youtube2)
+    + fld('LinkedIn — 1', 'links.linkedin1', C.links.linkedin1)
+    + fld('LinkedIn — 2', 'links.linkedin2', C.links.linkedin2);
+
+  const gamesBody = '<div class="tabs">' + gameTabs + '</div>'
+    + (g ? (
+      '<button type="button" class="mini-danger" style="margin-bottom:20px;" data-action="remove-game">' + t.admin_remove_game + '</button>'
+      + fld(t.f_game_title, 'games.' + gi + '.title', g.title)
+      + '<div class="check-row"><input type="checkbox" data-path="games.' + gi + '.hasDetail"' + (g.hasDetail ? ' checked' : '') + ' id="chk-detail"><label for="chk-detail" style="cursor:pointer;">' + t.f_has_detail + '</label></div>'
+      + '<div class="grid-2">'
+      + fld(t.f_genre, 'games.' + gi + '.genre.' + al, (g.genre && g.genre[al]) || '')
+      + fld(t.f_platforms, 'games.' + gi + '.platforms', g.platforms || '')
+      + '</div>'
+      + fld(t.f_tagline, 'games.' + gi + '.tagline.' + al, (g.tagline && g.tagline[al]) || '')
+      + fldArea(t.detail_story, 'games.' + gi + '.story.' + al, (g.story && g.story[al]) || '', 3)
+      + fldArea(t.detail_gameplay, 'games.' + gi + '.gameplay.' + al, (g.gameplay && g.gameplay[al]) || '', 3)
+      + fldArea(t.f_features, 'games.' + gi + '.features.' + al, ((g.features && g.features[al]) || []).join('\n'), 4, 'lines')
+      + '<div class="grid-2">'
+      + fld(t.f_jam, 'games.' + gi + '.jam', g.jam || '')
+      + fld(t.f_video, 'games.' + gi + '.video', g.video || '')
+      + '</div>'
+      + '<div class="grid-2">'
+      + fld(t.f_itch, 'games.' + gi + '.itch', g.itch || '')
+      + fld(t.f_accent, 'games.' + gi + '.accent', g.accent || '#e0a85e')
+      + '</div>'
+      + fld(t.f_cover, 'games.' + gi + '.cover', g.cover || '')
+      + fldArea(t.f_shots, 'games.' + gi + '.shots', (g.shots || []).join('\n'), 3, 'lines')
+    ) : '');
+
+  const blogBody = '<div class="tabs">' + blogTabs + '</div>'
+    + (p ? (
+      '<button type="button" class="mini-danger" style="margin-bottom:20px;" data-action="remove-post">' + t.admin_remove_post + '</button>'
+      + fld(t.f_blog_title, 'blog.' + bi + '.title.' + al, (p.title && p.title[al]) || '')
+      + '<div class="grid-2">'
+      + fld(t.f_blog_date, 'blog.' + bi + '.date', p.date || '')
+      + fld(t.f_blog_cover, 'blog.' + bi + '.cover', p.cover || '')
+      + '</div>'
+      + fldArea(t.f_blog_excerpt, 'blog.' + bi + '.excerpt.' + al, (p.excerpt && p.excerpt[al]) || '', 2)
+      + fldArea(t.f_blog_body, 'blog.' + bi + '.body.' + al, (p.body && p.body[al]) || '', 8)
+    ) : '<p class="hint" style="font-size:13.5px;">' + t.admin_no_posts + '</p>');
+
+  // ---- AI blog generator ----
+  const keySet = !!Admin.geminiKey;
+  const aiSrc = Admin.aiSource || 'youtube';
+  const aiBody =
+    '<p class="hint" style="margin:0 0 18px;">' + t.ai_note + '</p>'
+    + '<div class="field"><label>' + t.ai_key_label
+      + ' · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:#5bc0be; text-decoration:none;">' + t.ai_key_get + '</a></label>'
+      + '<div class="key-row"><input class="input" type="password" id="ai-key" placeholder="' + esc(t.ai_key_ph) + '"' + (keySet ? ' value="••••••••••••"' : '') + '>'
+      + '<button type="button" class="tb-btn tb-ghost" data-action="ai-save-key">' + t.ai_key_save + '</button></div>'
+      + '<p class="form-ok" id="ai-key-msg" style="display:' + (keySet ? 'block' : 'none') + ';">' + t.ai_key_saved + '</p></div>'
+    + '<div class="field"><label>' + t.ai_source_label + '</label><div class="seg">'
+      + '<button type="button" class="seg-btn' + (aiSrc === 'youtube' ? ' on' : '') + '" data-action="ai-src" data-src="youtube">' + t.ai_source_youtube + '</button>'
+      + '<button type="button" class="seg-btn' + (aiSrc === 'topic' ? ' on' : '') + '" data-action="ai-src" data-src="topic">' + t.ai_source_topic + '</button>'
+      + '</div></div>'
+    + '<div class="field" id="ai-input-yt"' + (aiSrc === 'youtube' ? '' : ' style="display:none;"') + '><input class="input" id="ai-youtube" placeholder="' + esc(t.ai_youtube_ph) + '"></div>'
+    + '<div class="field" id="ai-input-topic"' + (aiSrc === 'topic' ? '' : ' style="display:none;"') + '><textarea class="input" id="ai-topic" rows="3" placeholder="' + esc(t.ai_topic_ph) + '"></textarea></div>'
+    + '<button type="button" class="tb-btn tb-primary" id="ai-gen-btn" data-action="ai-generate">✦ ' + t.ai_generate + '</button>'
+    + '<p class="form-error" id="ai-err" style="display:none;"></p>'
+    + '<p class="form-ok" id="ai-ok" style="display:none;"></p>';
+
+  const securityBody = '<p class="hint" style="margin:0 0 16px; font-size:13px;">' + t.admin_security_note + '</p>'
+    + '<form id="pass-form">'
+    + '<div class="field"><label>' + t.f_cur_pass + '</label><input class="input" type="password" id="cp0" autocomplete="current-password"></div>'
+    + '<div class="grid-2">'
+    + '<div class="field"><label>' + t.f_new_pass + '</label><input class="input" type="password" id="cp1" autocomplete="new-password"></div>'
+    + '<div class="field"><label>' + t.f_new_pass2 + '</label><input class="input" type="password" id="cp2" autocomplete="new-password"></div>'
+    + '</div>'
+    + '<p class="form-error" id="pass-err" style="display:none;"></p>'
+    + '<p class="form-ok" id="pass-ok" style="display:none;">' + t.pass_changed + '</p>'
+    + '<button type="submit" class="tb-btn tb-ghost">' + t.btn_change_pass + '</button>'
+    + '</form>';
+
   $app.innerHTML = '<main class="admin-page">'
     // banner
     + '<div class="admin-banner"><div class="admin-banner-inner">'
@@ -240,97 +401,19 @@ function renderPanel() {
     + '<button type="button" class="tb-btn tb-danger" data-action="reset">↺ ' + t.admin_reset + '</button>'
     + '<button type="button" class="tb-btn tb-ghost tb-right" data-action="view-site">' + t.admin_view_site + ' ↗</button>'
     + '</div>'
-    // hero
-    + '<section class="admin-section">' + sectionHead('✦', t.admin_s_hero)
-    + fld(t.f_hero_title, 'hero.title.' + al, C.hero.title[al])
-    + fldArea(t.f_hero_sub, 'hero.sub.' + al, C.hero.sub[al], 3)
-    + '</section>'
-    // vision/mission/story
-    + '<section class="admin-section">' + sectionHead('◷', t.admin_s_about)
-    + fldArea(t.vision_h, 'vision.' + al, C.vision[al], 3)
-    + fldArea(t.mission_h, 'mission.' + al, C.mission[al], 3)
-    + fldArea(t.f_story, 'story.' + al, C.story[al], 3)
-    + fldArea(t.f_about_lead, 'about.lead.' + al, C.about.lead[al], 2)
-    + '</section>'
-    // next cards
-    + '<section class="admin-section">' + sectionHead('▸', t.admin_s_next)
-    + nextRows
-    + '<button type="button" class="mini-add" data-action="add-next">' + t.admin_add_next + '</button>'
-    + '</section>'
-    // team
-    + '<section class="admin-section">' + sectionHead('◍', t.team_title)
-    + teamRows
-    + '<button type="button" class="mini-add" data-action="add-member">' + t.admin_add_member + '</button>'
-    + '</section>'
-    // contact
-    + '<section class="admin-section">' + sectionHead('✉', t.admin_s_contact)
-    + fldArea(t.f_contact_sub, 'contact.sub.' + al, C.contact.sub[al], 2)
-    + '</section>'
-    // links
-    + '<section class="admin-section">' + sectionHead('⚲', t.admin_s_links)
-    + fld('itch.io', 'links.itch', C.links.itch)
-    + fld('E-mail', 'links.email', C.links.email)
-    + fld('YouTube 1', 'links.youtube1', C.links.youtube1)
-    + fld('YouTube 2', 'links.youtube2', C.links.youtube2)
-    + fld('LinkedIn — 1', 'links.linkedin1', C.links.linkedin1)
-    + fld('LinkedIn — 2', 'links.linkedin2', C.links.linkedin2)
-    + '</section>'
-    // games
-    + '<section class="admin-section">' + sectionHead('✦', t.admin_s_games)
-    + '<div class="tabs">' + gameTabs + '</div>'
-    + (g ? (
-      '<button type="button" class="mini-danger" style="margin-bottom:20px;" data-action="remove-game">' + t.admin_remove_game + '</button>'
-      + fld(t.f_game_title, 'games.' + gi + '.title', g.title)
-      + '<div class="check-row"><input type="checkbox" data-path="games.' + gi + '.hasDetail"' + (g.hasDetail ? ' checked' : '') + ' id="chk-detail"><label for="chk-detail" style="cursor:pointer;">' + t.f_has_detail + '</label></div>'
-      + '<div class="grid-2">'
-      + fld(t.f_genre, 'games.' + gi + '.genre.' + al, (g.genre && g.genre[al]) || '')
-      + fld(t.f_platforms, 'games.' + gi + '.platforms', g.platforms || '')
-      + '</div>'
-      + fld(t.f_tagline, 'games.' + gi + '.tagline.' + al, (g.tagline && g.tagline[al]) || '')
-      + fldArea(t.detail_story, 'games.' + gi + '.story.' + al, (g.story && g.story[al]) || '', 3)
-      + fldArea(t.detail_gameplay, 'games.' + gi + '.gameplay.' + al, (g.gameplay && g.gameplay[al]) || '', 3)
-      + fldArea(t.f_features, 'games.' + gi + '.features.' + al, ((g.features && g.features[al]) || []).join('\n'), 4, 'lines')
-      + '<div class="grid-2">'
-      + fld(t.f_jam, 'games.' + gi + '.jam', g.jam || '')
-      + fld(t.f_video, 'games.' + gi + '.video', g.video || '')
-      + '</div>'
-      + '<div class="grid-2">'
-      + fld(t.f_itch, 'games.' + gi + '.itch', g.itch || '')
-      + fld(t.f_accent, 'games.' + gi + '.accent', g.accent || '#e0a85e')
-      + '</div>'
-      + fld(t.f_cover, 'games.' + gi + '.cover', g.cover || '')
-      + fldArea(t.f_shots, 'games.' + gi + '.shots', (g.shots || []).join('\n'), 3, 'lines')
-    ) : '')
-    + '</section>'
-    // blog
-    + '<section class="admin-section">' + sectionHead('✎', t.admin_s_blog)
-    + '<div class="tabs">' + blogTabs + '</div>'
-    + (p ? (
-      '<button type="button" class="mini-danger" style="margin-bottom:20px;" data-action="remove-post">' + t.admin_remove_post + '</button>'
-      + fld(t.f_blog_title, 'blog.' + bi + '.title.' + al, (p.title && p.title[al]) || '')
-      + '<div class="grid-2">'
-      + fld(t.f_blog_date, 'blog.' + bi + '.date', p.date || '')
-      + fld(t.f_blog_cover, 'blog.' + bi + '.cover', p.cover || '')
-      + '</div>'
-      + fldArea(t.f_blog_excerpt, 'blog.' + bi + '.excerpt.' + al, (p.excerpt && p.excerpt[al]) || '', 2)
-      + fldArea(t.f_blog_body, 'blog.' + bi + '.body.' + al, (p.body && p.body[al]) || '', 8)
-    ) : '<p class="hint" style="font-size:13.5px;">' + t.admin_no_posts + '</p>')
-    + '</section>'
-    // security
-    + '<section class="admin-section">'
-    + sectionHead('⚿', t.admin_s_security, ' style="background:rgba(91,192,190,0.14);border-color:rgba(91,192,190,0.28);color:#5bc0be;"')
-    + '<p class="hint" style="margin:0 0 16px; font-size:13px;">' + t.admin_security_note + '</p>'
-    + '<form id="pass-form">'
-    + '<div class="field"><label>' + t.f_cur_pass + '</label><input class="input" type="password" id="cp0" autocomplete="current-password"></div>'
-    + '<div class="grid-2">'
-    + '<div class="field"><label>' + t.f_new_pass + '</label><input class="input" type="password" id="cp1" autocomplete="new-password"></div>'
-    + '<div class="field"><label>' + t.f_new_pass2 + '</label><input class="input" type="password" id="cp2" autocomplete="new-password"></div>'
-    + '</div>'
-    + '<p class="form-error" id="pass-err" style="display:none;"></p>'
-    + '<p class="form-ok" id="pass-ok" style="display:none;">' + t.pass_changed + '</p>'
-    + '<button type="submit" class="tb-btn tb-ghost">' + t.btn_change_pass + '</button>'
-    + '</form>'
-    + '</section>'
+    // section navigation (jump links)
+    + '<nav class="admin-nav"><span class="admin-nav-title">' + t.admin_nav_title + '</span>' + navHtml + '</nav>'
+    // sections
+    + sec('hero', 1, '✦', t.admin_s_hero, heroBody)
+    + sec('about', 2, '◷', t.admin_s_about, aboutBody)
+    + sec('next', 3, '▸', t.admin_s_next, nextBody)
+    + sec('team', 4, '◍', t.team_title, teamBody)
+    + sec('contact', 5, '✉', t.admin_s_contact, contactBody)
+    + sec('links', 6, '⚲', t.admin_s_links, linksBody)
+    + sec('games', 7, '✦', t.admin_s_games, gamesBody)
+    + sec('ai', 8, '✦', t.admin_s_ai, aiBody, ' style="background:rgba(155,108,216,0.16);border-color:rgba(155,108,216,0.32);color:#b98be0;"')
+    + sec('blog', 9, '✎', t.admin_s_blog, blogBody)
+    + sec('security', 10, '⚿', t.admin_s_security, securityBody, ' style="background:rgba(91,192,190,0.14);border-color:rgba(91,192,190,0.28);color:#5bc0be;"')
     + '</main>';
 
   bindPanel();
@@ -447,6 +530,69 @@ function bindPanel() {
         App.content = clone(CONTENT_DEFAULTS);
         await saveNow();
         renderPanel();
+        break;
+      }
+      case 'jump': {
+        const el = document.getElementById(btn.dataset.target);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        break;
+      }
+      case 'ai-src': {
+        Admin.aiSource = btn.dataset.src;
+        root.querySelectorAll('[data-action="ai-src"]').forEach(b => b.classList.toggle('on', b.dataset.src === Admin.aiSource));
+        document.getElementById('ai-input-yt').style.display = Admin.aiSource === 'youtube' ? '' : 'none';
+        document.getElementById('ai-input-topic').style.display = Admin.aiSource === 'topic' ? '' : 'none';
+        break;
+      }
+      case 'ai-save-key': {
+        const inp = document.getElementById('ai-key');
+        const val = (inp.value || '').trim();
+        const errEl = document.getElementById('ai-err');
+        errEl.style.display = 'none';
+        if (!val || val.charAt(0) === '•') return; // empty or unchanged mask
+        try {
+          await saveGeminiKey(val);
+          document.getElementById('ai-key-msg').style.display = 'block';
+          inp.value = '••••••••••••';
+        } catch (err) {
+          errEl.textContent = t.ai_err + ': ' + (err.message || err);
+          errEl.style.display = 'block';
+        }
+        break;
+      }
+      case 'ai-generate': {
+        const okEl = document.getElementById('ai-ok'), errEl = document.getElementById('ai-err');
+        okEl.style.display = 'none'; errEl.style.display = 'none';
+        if (!Admin.geminiKey) { errEl.textContent = t.ai_key_missing; errEl.style.display = 'block'; return; }
+        const src = Admin.aiSource || 'youtube';
+        const value = src === 'youtube'
+          ? document.getElementById('ai-youtube').value.trim()
+          : document.getElementById('ai-topic').value.trim();
+        if (!value) { errEl.textContent = t.ai_input_missing; errEl.style.display = 'block'; return; }
+        const genBtn = document.getElementById('ai-gen-btn');
+        genBtn.disabled = true; genBtn.textContent = t.ai_generating;
+        try {
+          const obj = await generateBlog({ type: src, value });
+          if (!C.blog) C.blog = [];
+          C.blog.unshift({
+            slug: slugify((obj.title_en || obj.title_tr || 'post') + '-' + Date.now().toString(36)),
+            date: new Date().toISOString().slice(0, 10), cover: '',
+            title: { tr: obj.title_tr || '', en: obj.title_en || '' },
+            excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
+            body: { tr: obj.body_tr || '', en: obj.body_en || '' },
+          });
+          Admin.blogIdx = 0;
+          await saveNow();
+          renderPanel();
+          const freshOk = document.getElementById('ai-ok');
+          if (freshOk) { freshOk.textContent = t.ai_done; freshOk.style.display = 'block'; }
+          const blogSec = document.getElementById('sec-blog');
+          if (blogSec) blogSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (err) {
+          genBtn.disabled = false; genBtn.textContent = '✦ ' + t.ai_generate;
+          errEl.textContent = t.ai_err + ': ' + (err.message || err);
+          errEl.style.display = 'block';
+        }
         break;
       }
     }
