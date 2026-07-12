@@ -5,3 +5,7 @@ node_modules/
 # Firebase config git'e girmez: yerelde example dosyasindan kopyalanir,
 # canli sitede GitHub Actions deploy sirasinda Secrets'tan uretir.
 public/js/firebase-config.js
+
+# Gizli env/sifre notlari — ASLA commit edilmez (FTP sifresi vb. icerir)
+GIZLI-env-sifreler.md
+*.gizli.md
