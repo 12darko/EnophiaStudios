@@ -12,6 +12,7 @@ const Admin = {
   saveTimer: null,
   authWatcherOn: false,
   authReady: false,
+  seedChecked: false,
 };
 
 function setPath(obj, path, value) {
@@ -75,8 +76,30 @@ function renderAdmin() {
       + '<p class="sub" style="margin:0;">…</p></div></main>';
     return;
   }
-  if (fbAuth.currentUser) renderPanel();
-  else renderLogin();
+  if (fbAuth.currentUser) {
+    if (!Admin.seedChecked) { ensureSeeded().then(renderPanel); }
+    else renderPanel();
+  } else {
+    renderLogin();
+  }
+}
+
+// On first login, publish ALL current content to Firestore so the database
+// holds the full editable dataset (the user sees everything in the console and
+// edits it from here). On later logins, pull the freshest saved content into
+// the editor. Runs once per admin session.
+async function ensureSeeded() {
+  Admin.seedChecked = true;
+  if (!fbDb) return;
+  try {
+    const ref = fbDb.collection('site').doc('content');
+    const snap = await ref.get();
+    if (!snap.exists) {
+      await ref.set(App.content); // seed full defaults → visible in Firestore
+    } else {
+      App.content = deepMerge(clone(CONTENT_DEFAULTS), snap.data());
+    }
+  } catch (e) { console.warn('seed/load:', e && e.code); }
 }
 
 // ---------------- Firebase not configured yet: show setup steps ----------------

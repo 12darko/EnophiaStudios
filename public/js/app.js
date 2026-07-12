@@ -35,18 +35,31 @@ function initFirebase() {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     fbAuth = firebase.auth();
     fbDb = firebase.firestore();
-    fbDb.collection('site').doc('content').onSnapshot(snap => {
-      if (snap.metadata.hasPendingWrites) return; // our own write echoing back
-      if (!snap.exists) return;
-      App.content = deepMerge(clone(CONTENT_DEFAULTS), snap.data());
-      // live-update public views; never re-render mid-typing in the admin panel
-      if (App.view.name !== 'admin') render();
-    }, err => console.warn('Firestore subscribe:', err && err.code));
+    // Cache-first (IndexedDB): reloads and repeat visits are served from the
+    // local cache — 0 server reads. Only the first load of a *changed* doc
+    // costs a read. See firebase-maliyet-optimizasyon-rehberi.md §3.1.
+    try { fbDb.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } catch (e) {}
     return true;
   } catch (e) {
     console.warn('Firebase init failed:', e && e.message);
     return false;
   }
+}
+
+// Public content read: ONE cache-first get() per page load — deliberately NOT a
+// permanent onSnapshot listener. A portfolio's content changes rarely, so a
+// live listener open on every visitor's tab would burn reads for no benefit.
+// Cost guide §2.4 / §3.4: use get() for content-type screens, reserve
+// onSnapshot for genuinely live data (chat etc.).
+async function loadContent() {
+  if (!fbDb) return;
+  try {
+    const snap = await fbDb.collection('site').doc('content').get();
+    if (snap.exists) {
+      App.content = deepMerge(clone(CONTENT_DEFAULTS), snap.data());
+      if (App.view.name !== 'admin') render();
+    }
+  } catch (e) { console.warn('content load:', e && e.code); }
 }
 
 function localizeGame(g, lang) {
@@ -484,8 +497,9 @@ window.addEventListener('hashchange', () => {
 // Run after ALL scripts load (admin.js defines renderAdmin, which a direct
 // #admin page load needs immediately) — DOMContentLoaded guarantees that.
 document.addEventListener('DOMContentLoaded', function init() {
-  // defaults render instantly; Firestore snapshot (if configured) refreshes on arrival
+  // defaults render instantly; a single cache-first read refreshes from Firestore
   App.content = clone(CONTENT_DEFAULTS);
   App.fb = initFirebase();
   onRoute();
+  if (App.fb) loadContent();
 });
