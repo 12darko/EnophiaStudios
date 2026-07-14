@@ -61,7 +61,11 @@ jobs:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftps
+          # FTP_PROTOCOL secret'i ile degistirilebilir: ftps (varsayilan) / ftp / ftps-legacy
+          protocol: ${{ secrets.FTP_PROTOCOL || 'ftps' }}
+          # FTP_PORT secret'i ile degistirilebilir (varsayilan 21)
+          port: ${{ secrets.FTP_PORT || 21 }}
+          timeout: 60000
           local-dir: ./public/
           # Bu host'un FTP hesabi zaten public_html (web koku) icine giriyor,
           # o yuzden varsayilan './' = girilen klasorun ta kendisi. Baska bir
