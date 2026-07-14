@@ -183,6 +183,38 @@ async function unsplashImage(query) {
   } catch (e) { return ''; }
 }
 
+// Fetch a public GitHub repo's recent activity (no auth needed) to feed the LLM.
+// The LLM can't browse the web, so we gather the material and hand it over.
+async function githubContext(owner, repo) {
+  const H = { 'Accept': 'application/vnd.github+json' };
+  const base = 'https://api.github.com/repos/' + owner + '/' + repo;
+  const repoRes = await fetch(base, { headers: H });
+  if (!repoRes.ok) {
+    throw new Error(repoRes.status === 404 ? 'repo bulunamadı'
+      : repoRes.status === 403 ? 'GitHub API limiti (biraz sonra dene)' : 'GitHub ' + repoRes.status);
+  }
+  const info = await repoRes.json();
+  let commits = [];
+  try { commits = await (await fetch(base + '/commits?per_page=20', { headers: H })).json(); } catch (e) {}
+  let readme = '';
+  try {
+    const rd = await (await fetch(base + '/readme', { headers: H })).json();
+    if (rd && rd.content) {
+      const b64 = rd.content.replace(/\n/g, '');
+      try { readme = decodeURIComponent(escape(atob(b64))); } catch (e) { readme = atob(b64); }
+      readme = readme.slice(0, 1800);
+    }
+  } catch (e) {}
+  const commitLines = (Array.isArray(commits) ? commits : []).slice(0, 20)
+    .map(c => '- ' + String((c.commit && c.commit.message) || '').split('\n')[0]).join('\n');
+  return 'GITHUB REPO: ' + owner + '/' + repo + '\n'
+    + 'Aciklama: ' + (info.description || '-') + '\n'
+    + 'Dil: ' + (info.language || '-') + ' · Yildiz: ' + (info.stargazers_count || 0)
+    + (info.homepage ? ' · Site: ' + info.homepage : '') + '\n'
+    + 'SON COMMITLER:\n' + (commitLines || '-') + '\n\n'
+    + 'README (kisaltilmis):\n' + (readme || '-');
+}
+
 const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
   + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
@@ -760,8 +792,20 @@ function bindPanel() {
         Admin.pendingActions = null;
         Admin.chatBusy = true;
         renderPanel();
+        // If a GitHub repo URL is present, fetch its activity and hand it to the LLM.
+        let extra = '';
+        const gh = msg.match(/https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)/i);
+        if (gh) {
+          try {
+            const ctx = await githubContext(gh[1], gh[2].replace(/\.git$/, ''));
+            extra = '\n\n' + ctx
+              + '\n\nYukaridaki GitHub repo aktivitesinden yararlanarak istenen dilde DOLU ve DETAYLI bir devlog blog yazisi olustur (add_post action; body_tr ve body_en en az 4-6 paragraf). image_query alanina uygun ingilizce anahtar kelimeler koy.';
+          } catch (e) {
+            extra = '\n\n(GitHub verisi alinamadi: ' + (e.message || e) + ')';
+          }
+        }
         try {
-          const raw = await llmChat(AGENT_SYS + '\n\n' + agentContext(), Admin.chat, true);
+          const raw = await llmChat(AGENT_SYS + '\n\n' + agentContext() + extra, Admin.chat, true);
           let obj; try { obj = parseJsonLoose(raw); } catch (e) { obj = { reply: raw, actions: [] }; }
           Admin.chat.push({ role: 'assistant', content: obj.reply || '…' });
           Admin.pendingActions = (obj.actions && obj.actions.length) ? obj.actions : null;
