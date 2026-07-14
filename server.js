@@ -16,7 +16,7 @@ const CSP =
   "font-src https://fonts.gstatic.com; " +
   "img-src 'self' https: data:; " +
   "frame-src https://www.youtube.com; " +
-  "connect-src 'self' https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://generativelanguage.googleapis.com; " +
+  "connect-src 'self' https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://generativelanguage.googleapis.com https://api.groq.com https://api.unsplash.com; " +
   "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
 const app = express();

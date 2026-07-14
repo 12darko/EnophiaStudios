@@ -14,7 +14,13 @@ const Admin = {
   authReady: false,
   seedChecked: false,
   geminiKey: '',      // cached in memory; persisted in Firestore site/secrets (admin-only)
+  groqKey: '',
+  unsplashKey: '',
+  provider: 'gemini', // 'gemini' | 'groq'
   aiSource: 'youtube',
+  chat: [],           // ephemeral chat transcript (not saved)
+  pendingActions: null,
+  chatBusy: false,
 };
 
 function setPath(obj, path, value) {
@@ -105,52 +111,170 @@ async function ensureSeeded() {
   await loadSecrets();
 }
 
-// ---------------- AI (Gemini) — key in Firestore site/secrets, calls from admin's browser ----------------
+// ---------------- AI — keys in Firestore site/secrets (admin-only), calls from admin's browser ----------------
 async function loadSecrets() {
   if (!fbDb) return;
   try {
     const snap = await fbDb.collection('site').doc('secrets').get();
-    if (snap.exists && snap.data().geminiKey) Admin.geminiKey = snap.data().geminiKey;
+    if (snap.exists) {
+      const s = snap.data();
+      Admin.geminiKey = s.geminiKey || '';
+      Admin.groqKey = s.groqKey || '';
+      Admin.unsplashKey = s.unsplashKey || '';
+      if (s.aiProvider === 'groq' || s.aiProvider === 'gemini') Admin.provider = s.aiProvider;
+    }
   } catch (e) { /* rules deny read unless authed — safe to ignore */ }
 }
 
-async function saveGeminiKey(key) {
-  await fbDb.collection('site').doc('secrets').set({ geminiKey: key }, { merge: true });
-  Admin.geminiKey = key;
+async function saveSecret(field, value) {
+  const patch = {}; patch[field] = value;
+  await fbDb.collection('site').doc('secrets').set(patch, { merge: true });
 }
 
-// Ask Gemini for a bilingual blog draft. source = { type:'youtube'|'topic', value }
-async function generateBlog(source) {
-  if (!Admin.geminiKey) throw new Error('no-key');
-  const instr = 'You are the devlog writer for Enophia Studios, an independent game studio. '
-    + 'Write ONE blog post and return ONLY valid minified JSON with exactly these string fields: '
-    + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en"}. '
-    + 'title: short and catchy. excerpt: 1-2 sentence summary. body: 3-6 short paragraphs, natural devlog tone, plain text (no markdown). '
-    + 'The _tr fields must be in Turkish and the _en fields in English (not translations of each other word-for-word, but the same post in each language).';
-  const parts = [];
-  let prompt = instr;
-  if (source.type === 'youtube') {
-    parts.push({ fileData: { fileUri: source.value } });
-    prompt += '\n\nWrite the post based on the linked YouTube video.';
-  } else {
-    prompt += '\n\nTopic / notes:\n' + source.value;
+function activeLlmKey() { return Admin.provider === 'groq' ? Admin.groqKey : Admin.geminiKey; }
+
+function parseJsonLoose(txt) {
+  try { return JSON.parse(txt); }
+  catch (e) {
+    const c = String(txt).replace(/```json/gi, '').replace(/```/g, '').trim();
+    const s = c.indexOf('{'), en = c.lastIndexOf('}');
+    return JSON.parse(s >= 0 && en > s ? c.slice(s, en + 1) : c);
   }
-  parts.push({ text: prompt });
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='
-    + encodeURIComponent(Admin.geminiKey);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.85 } }),
+}
+
+// Provider-agnostic chat completion. history = [{role:'user'|'assistant', content}]
+async function llmChat(system, history, wantJson) {
+  const msgs = history.filter(m => m.role === 'user' || m.role === 'assistant');
+  if (Admin.provider === 'groq') {
+    if (!Admin.groqKey) throw new Error('no-key');
+    const messages = [{ role: 'system', content: system }].concat(msgs.map(m => ({ role: m.role, content: m.content })));
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + Admin.groqKey },
+      body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, temperature: 0.7,
+        response_format: wantJson ? { type: 'json_object' } : undefined }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + res.status));
+    return data.choices[0].message.content;
+  }
+  if (!Admin.geminiKey) throw new Error('no-key');
+  const contents = msgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(Admin.geminiKey), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents,
+      generationConfig: { temperature: 0.7, responseMimeType: wantJson ? 'application/json' : 'text/plain' } }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + res.status));
-  const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content
-    && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
-    && data.candidates[0].content.parts[0].text;
-  if (!txt) throw new Error('empty response');
-  try { return JSON.parse(txt); }
-  catch (e) { return JSON.parse(txt.replace(/```json|```/g, '').trim()); }
+  return data.candidates[0].content.parts[0].text;
+}
+
+// Find a royalty-free cover image on Unsplash (LLMs can't browse the web themselves).
+async function unsplashImage(query) {
+  if (!Admin.unsplashKey || !query) return '';
+  try {
+    const res = await fetch('https://api.unsplash.com/search/photos?per_page=1&orientation=landscape&query=' + encodeURIComponent(query), {
+      headers: { 'Authorization': 'Client-ID ' + Admin.unsplashKey },
+    });
+    const data = await res.json();
+    const r = data && data.results && data.results[0];
+    return r ? (r.urls.regular || r.urls.small || '') : '';
+  } catch (e) { return ''; }
+}
+
+const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
+  + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
+  + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
+  + 'title: short and catchy. excerpt: 1-2 sentences. body: 3-6 short paragraphs, natural devlog tone, plain text (no markdown). '
+  + 'image_query: 2-4 English keywords for a fitting stock cover photo. '
+  + 'The _tr fields in Turkish, the _en fields in English (same post, not word-for-word).';
+
+// One-shot generator (AI Blog Üreteci). source = { type:'youtube'|'topic', value }
+async function generateBlog(source) {
+  if (source.type === 'youtube') {
+    if (!Admin.geminiKey) throw new Error('YouTube: Gemini');
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(Admin.geminiKey), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: BLOG_SYS }] },
+        contents: [{ role: 'user', parts: [{ fileData: { fileUri: source.value } }, { text: 'Write the post based on the linked video.' }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.85 } }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + res.status));
+    return parseJsonLoose(data.candidates[0].content.parts[0].text);
+  }
+  return parseJsonLoose(await llmChat(BLOG_SYS, [{ role: 'user', content: 'Topic / notes:\n' + source.value }], true));
+}
+
+// ---------------- chat assistant (edits any content, with a confirm step) ----------------
+function agentContext() {
+  const C = App.content;
+  return 'CURRENT CONTENT (reference for indices/paths):\n' + JSON.stringify({
+    hero: C.hero, vision: C.vision, mission: C.mission, story: C.story,
+    about: C.about, contact: C.contact, links: C.links,
+    team: C.team.map((m, i) => ({ i: i, name: m.name, role: m.role })),
+    games: C.games.map((g, i) => ({ i: i, title: g.title, tagline: g.tagline, genre: g.genre })),
+    updates: C.updates,
+  });
+}
+
+const AGENT_SYS = [
+  'Sen Enophia Studios bagimsiz oyun studyosunun site admin asistanisin.',
+  'Kullanicinin istegini yerine getir ve SADECE gecerli JSON dondur, baska hicbir metin yazma.',
+  'Sema: {"reply":"kullaniciya kisa Turkce yanit","actions":[...]}.',
+  'actions bos [] olabilir (sadece sohbet/soru ise). Action tipleri:',
+  '- Blog ekle: {"type":"add_post","title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query":"2-4 ingilizce anahtar kelime ya da bos"}',
+  '- Alan degistir: {"type":"set","path":"NOKTALI_YOL","value":"YENI DEGER"}',
+  'Gecerli path ornekleri: hero.title.tr, hero.title.en, hero.sub.tr, hero.sub.en, vision.tr, vision.en, mission.tr, mission.en, story.tr, story.en, about.lead.tr, about.lead.en, contact.sub.tr, contact.sub.en, links.email, links.itch, links.youtube1, links.youtube2, team.0.name, team.0.role.tr, team.0.role.en, games.0.title, games.0.tagline.tr, games.0.genre.tr, updates.count.',
+  'Iki dilli bir alani degistiriyorsan hem .tr hem .en icin AYRI set action uret. Metinlerde markdown kullanma.',
+  'Yeni oyun veya ekip uyesi EKLEMEK gibi seyleri su an desteklemiyorsun; oyle bir istekte actions bos birak ve reply icinde bunun panelden yapilmasi gerektigini soyle.',
+  'Emin olmadigin istekte degisiklik yapma; actions bos birak ve reply ile sor.',
+].join('\n');
+
+const CONTENT_TOP = ['hero', 'vision', 'mission', 'story', 'about', 'contact', 'links', 'team', 'games', 'next', 'updates'];
+
+function describeAction(a) {
+  if (!a || !a.type) return '';
+  if (a.type === 'add_post') return 'Blog yazısı ekle: “' + (a.title_tr || a.title_en || '') + '”' + (a.image_query ? ' (+ görsel)' : '');
+  if (a.type === 'set') return a.path + ' = ' + String(a.value == null ? '' : a.value).slice(0, 70);
+  return a.type;
+}
+
+function setPathSafe(obj, parts, value) {
+  let o = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (o[parts[i]] == null) return false; // never invent new structures
+    o = o[parts[i]];
+  }
+  o[parts[parts.length - 1]] = value;
+  return true;
+}
+
+async function applyActions(actions) {
+  for (const a of actions) {
+    if (!a || !a.type) continue;
+    if (a.type === 'add_post') {
+      if (!App.content.blog) App.content.blog = [];
+      let cover = '';
+      if (a.image_query && Admin.unsplashKey) cover = await unsplashImage(a.image_query);
+      App.content.blog.unshift({
+        slug: slugify((a.title_en || a.title_tr || 'post') + '-' + Date.now().toString(36)),
+        date: new Date().toISOString().slice(0, 10), cover: cover,
+        title: { tr: a.title_tr || '', en: a.title_en || '' },
+        excerpt: { tr: a.excerpt_tr || '', en: a.excerpt_en || '' },
+        body: { tr: a.body_tr || '', en: a.body_en || '' },
+      });
+      Admin.blogIdx = 0;
+    } else if (a.type === 'set' && typeof a.path === 'string') {
+      const parts = a.path.split('.');
+      if (CONTENT_TOP.indexOf(parts[0]) < 0) continue; // allowlist top-level content keys only
+      let val = a.value;
+      if (parts[parts.length - 1] === 'count') val = parseInt(val, 10) || 6;
+      setPathSafe(App.content, parts, val);
+    }
+  }
+  await saveNow();
 }
 
 // ---------------- Firebase not configured yet: show setup steps ----------------
@@ -276,7 +400,7 @@ function renderPanel() {
     ['hero', t.admin_s_hero], ['about', t.admin_s_about], ['next', t.admin_s_next],
     ['team', t.team_title], ['contact', t.admin_s_contact], ['links', t.admin_s_links],
     ['games', t.admin_s_games], ['ai', t.admin_s_ai], ['blog', t.admin_s_blog],
-    ['security', t.admin_s_security],
+    ['security', t.admin_s_security], ['chat', t.admin_s_chat],
   ];
   const navHtml = navItems.map(x =>
     '<button type="button" class="nav-chip" data-action="jump" data-target="sec-' + x[0] + '">' + x[1] + '</button>'
@@ -350,16 +474,28 @@ function renderPanel() {
       + fldArea(t.f_blog_body, 'blog.' + bi + '.body.' + al, (p.body && p.body[al]) || '', 8)
     ) : '<p class="hint" style="font-size:13.5px;">' + t.admin_no_posts + '</p>');
 
-  // ---- AI blog generator ----
-  const keySet = !!Admin.geminiKey;
+  // ---- AI blog generator + provider/keys ----
+  const prov = Admin.provider || 'gemini';
+  const provKeySet = prov === 'groq' ? !!Admin.groqKey : !!Admin.geminiKey;
+  const provKeyLabel = prov === 'groq' ? t.ai_groq_key_label : t.ai_gemini_key_label;
+  const provKeyUrl = prov === 'groq' ? 'https://console.groq.com/keys' : 'https://aistudio.google.com/apikey';
   const aiSrc = Admin.aiSource || 'youtube';
   const aiBody =
     '<p class="hint" style="margin:0 0 18px;">' + t.ai_note + '</p>'
-    + '<div class="field"><label>' + t.ai_key_label
-      + ' · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:#5bc0be; text-decoration:none;">' + t.ai_key_get + '</a></label>'
-      + '<div class="key-row"><input class="input" type="password" id="ai-key" placeholder="' + esc(t.ai_key_ph) + '"' + (keySet ? ' value="••••••••••••"' : '') + '>'
+    + '<div class="field"><label>' + t.ai_provider_label + '</label><div class="seg">'
+      + '<button type="button" class="seg-btn' + (prov === 'gemini' ? ' on' : '') + '" data-action="ai-provider" data-prov="gemini">Gemini</button>'
+      + '<button type="button" class="seg-btn' + (prov === 'groq' ? ' on' : '') + '" data-action="ai-provider" data-prov="groq">Groq</button>'
+      + '</div></div>'
+    + '<div class="field"><label>' + provKeyLabel
+      + ' · <a href="' + provKeyUrl + '" target="_blank" rel="noopener" style="color:#5bc0be; text-decoration:none;">' + t.ai_key_get + '</a></label>'
+      + '<div class="key-row"><input class="input" type="password" id="ai-key" placeholder="' + esc(t.ai_key_ph) + '"' + (provKeySet ? ' value="••••••••••••"' : '') + '>'
       + '<button type="button" class="tb-btn tb-ghost" data-action="ai-save-key">' + t.ai_key_save + '</button></div>'
-      + '<p class="form-ok" id="ai-key-msg" style="display:' + (keySet ? 'block' : 'none') + ';">' + t.ai_key_saved + '</p></div>'
+      + '<p class="form-ok" id="ai-key-msg" style="display:' + (provKeySet ? 'block' : 'none') + ';">' + t.ai_key_saved + '</p></div>'
+    + '<div class="field"><label>' + t.ai_unsplash_label
+      + ' · <a href="https://unsplash.com/oauth/applications" target="_blank" rel="noopener" style="color:#5bc0be; text-decoration:none;">' + t.ai_unsplash_get + '</a></label>'
+      + '<div class="key-row"><input class="input" type="password" id="unsplash-key" placeholder="' + esc(t.ai_unsplash_ph) + '"' + (Admin.unsplashKey ? ' value="••••••••••••"' : '') + '>'
+      + '<button type="button" class="tb-btn tb-ghost" data-action="ai-save-unsplash">' + t.ai_key_save + '</button></div>'
+      + '<p class="form-ok" id="unsplash-msg" style="display:' + (Admin.unsplashKey ? 'block' : 'none') + ';">' + t.ai_key_saved + '</p></div>'
     + '<div class="field"><label>' + t.ai_source_label + '</label><div class="seg">'
       + '<button type="button" class="seg-btn' + (aiSrc === 'youtube' ? ' on' : '') + '" data-action="ai-src" data-src="youtube">' + t.ai_source_youtube + '</button>'
       + '<button type="button" class="seg-btn' + (aiSrc === 'topic' ? ' on' : '') + '" data-action="ai-src" data-src="topic">' + t.ai_source_topic + '</button>'
@@ -369,6 +505,26 @@ function renderPanel() {
     + '<button type="button" class="tb-btn tb-primary" id="ai-gen-btn" data-action="ai-generate">✦ ' + t.ai_generate + '</button>'
     + '<p class="form-error" id="ai-err" style="display:none;"></p>'
     + '<p class="form-ok" id="ai-ok" style="display:none;"></p>';
+
+  // ---- AI assistant chat (bottom of panel) ----
+  const chatLog = Admin.chat.length
+    ? Admin.chat.map(m => '<div class="chat-msg ' + m.role + '">' + esc(m.content).replace(/\n/g, '<br>') + '</div>').join('')
+      + (Admin.chatBusy ? '<div class="chat-msg note">' + t.chat_thinking + '</div>' : '')
+    : '<div class="chat-empty">' + t.chat_empty + '</div>';
+  const confirmCard = Admin.pendingActions && Admin.pendingActions.length
+    ? '<div class="chat-confirm"><div class="chat-confirm-h">' + t.chat_confirm_h + '</div><ul>'
+      + Admin.pendingActions.map(a => '<li>' + esc(describeAction(a)) + '</li>').join('')
+      + '</ul><div class="chat-confirm-btns">'
+      + '<button type="button" class="tb-btn tb-primary" data-action="chat-apply">' + t.chat_apply + '</button>'
+      + '<button type="button" class="tb-btn tb-ghost" data-action="chat-cancel">' + t.chat_cancel + '</button>'
+      + '</div></div>'
+    : '';
+  const chatBody = '<p class="hint" style="margin:0 0 14px;">' + t.chat_note + '</p>'
+    + '<div class="chat-log" id="chat-log">' + chatLog + '</div>'
+    + confirmCard
+    + '<div class="chat-input-row"><textarea class="input" id="chat-input" rows="2" placeholder="' + esc(t.chat_ph) + '"' + (Admin.chatBusy ? ' disabled' : '') + '></textarea>'
+    + '<button type="button" class="tb-btn tb-primary" id="chat-send" data-action="chat-send"' + (Admin.chatBusy ? ' disabled' : '') + '>' + t.chat_send + '</button></div>'
+    + '<p class="form-error" id="chat-err" style="display:none;"></p>';
 
   const securityBody = '<p class="hint" style="margin:0 0 16px; font-size:13px;">' + t.admin_security_note + '</p>'
     + '<form id="pass-form">'
@@ -421,6 +577,7 @@ function renderPanel() {
     + sec('ai', 8, '✦', t.admin_s_ai, aiBody, ' style="background:rgba(155,108,216,0.16);border-color:rgba(155,108,216,0.32);color:#b98be0;"')
     + sec('blog', 9, '✎', t.admin_s_blog, blogBody)
     + sec('security', 10, '⚿', t.admin_s_security, securityBody, ' style="background:rgba(91,192,190,0.14);border-color:rgba(91,192,190,0.28);color:#5bc0be;"')
+    + sec('chat', 11, '✦', t.admin_s_chat, chatBody, ' style="background:rgba(155,108,216,0.16);border-color:rgba(155,108,216,0.32);color:#b98be0;"')
     + '</main>';
 
   bindPanel();
@@ -551,6 +708,12 @@ function bindPanel() {
         document.getElementById('ai-input-topic').style.display = Admin.aiSource === 'topic' ? '' : 'none';
         break;
       }
+      case 'ai-provider': {
+        Admin.provider = btn.dataset.prov;
+        try { await saveSecret('aiProvider', Admin.provider); } catch (e) {}
+        renderPanel();
+        break;
+      }
       case 'ai-save-key': {
         const inp = document.getElementById('ai-key');
         const val = (inp.value || '').trim();
@@ -558,7 +721,9 @@ function bindPanel() {
         errEl.style.display = 'none';
         if (!val || val.charAt(0) === '•') return; // empty or unchanged mask
         try {
-          await saveGeminiKey(val);
+          const field = Admin.provider === 'groq' ? 'groqKey' : 'geminiKey';
+          await saveSecret(field, val);
+          if (Admin.provider === 'groq') Admin.groqKey = val; else Admin.geminiKey = val;
           document.getElementById('ai-key-msg').style.display = 'block';
           inp.value = '••••••••••••';
         } catch (err) {
@@ -567,11 +732,66 @@ function bindPanel() {
         }
         break;
       }
+      case 'ai-save-unsplash': {
+        const inp = document.getElementById('unsplash-key');
+        const val = (inp.value || '').trim();
+        if (!val || val.charAt(0) === '•') return;
+        try {
+          await saveSecret('unsplashKey', val);
+          Admin.unsplashKey = val;
+          document.getElementById('unsplash-msg').style.display = 'block';
+          inp.value = '••••••••••••';
+        } catch (err) {
+          const errEl = document.getElementById('ai-err');
+          errEl.textContent = t.ai_err + ': ' + (err.message || err); errEl.style.display = 'block';
+        }
+        break;
+      }
+      case 'chat-send': {
+        const inp = document.getElementById('chat-input');
+        const msg = (inp.value || '').trim();
+        if (!msg) return;
+        if (!activeLlmKey()) {
+          const ce = document.getElementById('chat-err');
+          ce.textContent = t.chat_key_missing; ce.style.display = 'block';
+          return;
+        }
+        Admin.chat.push({ role: 'user', content: msg });
+        Admin.pendingActions = null;
+        Admin.chatBusy = true;
+        renderPanel();
+        try {
+          const raw = await llmChat(AGENT_SYS + '\n\n' + agentContext(), Admin.chat, true);
+          let obj; try { obj = parseJsonLoose(raw); } catch (e) { obj = { reply: raw, actions: [] }; }
+          Admin.chat.push({ role: 'assistant', content: obj.reply || '…' });
+          Admin.pendingActions = (obj.actions && obj.actions.length) ? obj.actions : null;
+        } catch (err) {
+          Admin.chat.push({ role: 'note', content: t.ai_err + ': ' + (err.message || err) });
+        }
+        Admin.chatBusy = false;
+        renderPanel();
+        break;
+      }
+      case 'chat-apply': {
+        const acts = Admin.pendingActions || [];
+        Admin.pendingActions = null;
+        Admin.chatBusy = true; renderPanel();
+        try { await applyActions(acts); Admin.chat.push({ role: 'note', content: t.chat_applied }); }
+        catch (err) { Admin.chat.push({ role: 'note', content: t.ai_err + ': ' + (err.message || err) }); }
+        Admin.chatBusy = false; renderPanel();
+        break;
+      }
+      case 'chat-cancel':
+        Admin.pendingActions = null; renderPanel();
+        break;
       case 'ai-generate': {
         const okEl = document.getElementById('ai-ok'), errEl = document.getElementById('ai-err');
         okEl.style.display = 'none'; errEl.style.display = 'none';
-        if (!Admin.geminiKey) { errEl.textContent = t.ai_key_missing; errEl.style.display = 'block'; return; }
         const src = Admin.aiSource || 'youtube';
+        const needGemini = src === 'youtube';
+        if ((needGemini && !Admin.geminiKey) || (!needGemini && !activeLlmKey())) {
+          errEl.textContent = t.ai_key_missing; errEl.style.display = 'block'; return;
+        }
         const value = src === 'youtube'
           ? document.getElementById('ai-youtube').value.trim()
           : document.getElementById('ai-topic').value.trim();
@@ -580,10 +800,12 @@ function bindPanel() {
         genBtn.disabled = true; genBtn.textContent = t.ai_generating;
         try {
           const obj = await generateBlog({ type: src, value });
+          let cover = '';
+          if (obj.image_query && Admin.unsplashKey) { try { cover = await unsplashImage(obj.image_query); } catch (e) {} }
           if (!C.blog) C.blog = [];
           C.blog.unshift({
             slug: slugify((obj.title_en || obj.title_tr || 'post') + '-' + Date.now().toString(36)),
-            date: new Date().toISOString().slice(0, 10), cover: '',
+            date: new Date().toISOString().slice(0, 10), cover: cover,
             title: { tr: obj.title_tr || '', en: obj.title_en || '' },
             excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
             body: { tr: obj.body_tr || '', en: obj.body_en || '' },
