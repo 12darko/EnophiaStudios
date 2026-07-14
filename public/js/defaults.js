@@ -61,6 +61,7 @@ const CONTENT_DEFAULTS = {
   },
   blog: [],
   updates: { enabled: true, count: 6 },   // homepage "Yenilikler" strip settings
+  autotrack: { repos: [], lastSeen: {} }, // tracked GitHub repos → auto devlog posts
   links: {
     itch: 'https://enophia.itch.io/',
     youtube1: 'https://www.youtube.com/@enophiastudios5117',

@@ -432,7 +432,7 @@ function renderPanel() {
     ['hero', t.admin_s_hero], ['about', t.admin_s_about], ['next', t.admin_s_next],
     ['team', t.team_title], ['contact', t.admin_s_contact], ['links', t.admin_s_links],
     ['games', t.admin_s_games], ['ai', t.admin_s_ai], ['blog', t.admin_s_blog],
-    ['security', t.admin_s_security], ['chat', t.admin_s_chat],
+    ['autotrack', t.admin_s_autotrack], ['security', t.admin_s_security], ['chat', t.admin_s_chat],
   ];
   const navHtml = navItems.map(x =>
     '<button type="button" class="nav-chip" data-action="jump" data-target="sec-' + x[0] + '">' + x[1] + '</button>'
@@ -558,6 +558,27 @@ function renderPanel() {
     + '<button type="button" class="tb-btn tb-primary" id="chat-send" data-action="chat-send"' + (Admin.chatBusy ? ' disabled' : '') + '>' + t.chat_send + '</button></div>'
     + '<p class="form-error" id="chat-err" style="display:none;"></p>';
 
+  // ---- repo tracking (auto blog) ----
+  const at = C.autotrack || { repos: [], lastSeen: {} };
+  const repoRows = (at.repos || []).map((r, i) =>
+    '<div class="row-sep"><div class="grid-2">'
+    + fld('GitHub repo URL', 'autotrack.repos.' + i + '.url', r.url || '')
+    + '<div class="field"><label>' + t.autotrack_lang + '</label>'
+      + '<select class="input" data-path="autotrack.repos.' + i + '.lang">'
+      + '<option value="both"' + (!r.lang || r.lang === 'both' ? ' selected' : '') + '>TR + EN</option>'
+      + '<option value="tr"' + (r.lang === 'tr' ? ' selected' : '') + '>TR</option>'
+      + '<option value="en"' + (r.lang === 'en' ? ' selected' : '') + '>EN</option></select></div>'
+    + '</div>'
+    + '<button type="button" class="mini-danger" data-action="repo-remove" data-idx="' + i + '">' + t.admin_remove_member + '</button>'
+    + '</div>'
+  ).join('');
+  const repoBody = '<p class="hint" style="margin:0 0 16px;">' + t.autotrack_note + '</p>'
+    + repoRows
+    + '<button type="button" class="mini-add" data-action="repo-add">' + t.autotrack_add + '</button>'
+    + '<div style="margin-top:22px;"><button type="button" class="tb-btn tb-primary" id="repo-check-btn" data-action="repo-check">' + t.autotrack_check + '</button></div>'
+    + '<p class="form-error" id="repo-err" style="display:none;"></p>'
+    + '<p class="form-ok" id="repo-ok" style="display:none;"></p>';
+
   const securityBody = '<p class="hint" style="margin:0 0 16px; font-size:13px;">' + t.admin_security_note + '</p>'
     + '<form id="pass-form">'
     + '<div class="field"><label>' + t.f_cur_pass + '</label><input class="input" type="password" id="cp0" autocomplete="current-password"></div>'
@@ -608,8 +629,9 @@ function renderPanel() {
     + sec('games', 7, '✦', t.admin_s_games, gamesBody)
     + sec('ai', 8, '✦', t.admin_s_ai, aiBody, ' style="background:rgba(155,108,216,0.16);border-color:rgba(155,108,216,0.32);color:#b98be0;"')
     + sec('blog', 9, '✎', t.admin_s_blog, blogBody)
-    + sec('security', 10, '⚿', t.admin_s_security, securityBody, ' style="background:rgba(91,192,190,0.14);border-color:rgba(91,192,190,0.28);color:#5bc0be;"')
-    + sec('chat', 11, '✦', t.admin_s_chat, chatBody, ' style="background:rgba(155,108,216,0.16);border-color:rgba(155,108,216,0.32);color:#b98be0;"')
+    + sec('autotrack', 10, '❯', t.admin_s_autotrack, repoBody, ' style="background:rgba(91,140,255,0.14);border-color:rgba(91,140,255,0.3);color:#7fa0ff;"')
+    + sec('security', 11, '⚿', t.admin_s_security, securityBody, ' style="background:rgba(91,192,190,0.14);border-color:rgba(91,192,190,0.28);color:#5bc0be;"')
+    + sec('chat', 12, '✦', t.admin_s_chat, chatBody, ' style="background:rgba(155,108,216,0.16);border-color:rgba(155,108,216,0.32);color:#b98be0;"')
     + '</main>';
 
   bindPanel();
@@ -828,6 +850,61 @@ function bindPanel() {
       case 'chat-cancel':
         Admin.pendingActions = null; renderPanel();
         break;
+      case 'repo-add':
+        if (!C.autotrack) C.autotrack = { repos: [], lastSeen: {} };
+        if (!C.autotrack.repos) C.autotrack.repos = [];
+        C.autotrack.repos.push({ url: '', lang: 'both' });
+        await saveNow(); renderPanel();
+        break;
+      case 'repo-remove':
+        C.autotrack.repos.splice(idx, 1);
+        await saveNow(); renderPanel();
+        break;
+      case 'repo-check': {
+        const okEl = document.getElementById('repo-ok'), errEl = document.getElementById('repo-err');
+        okEl.style.display = 'none'; errEl.style.display = 'none';
+        if (!C.autotrack) C.autotrack = { repos: [], lastSeen: {} };
+        if (!C.autotrack.lastSeen) C.autotrack.lastSeen = {};
+        const repos = (C.autotrack.repos || []).filter(r => r.url);
+        if (!repos.length) { errEl.textContent = t.autotrack_no_repos; errEl.style.display = 'block'; return; }
+        if (!activeLlmKey()) { errEl.textContent = t.chat_key_missing; errEl.style.display = 'block'; return; }
+        const cbtn = document.getElementById('repo-check-btn');
+        cbtn.disabled = true; cbtn.textContent = t.autotrack_checking;
+        let made = 0, checked = 0; const errs = [];
+        for (const r of repos) {
+          const m = String(r.url).match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
+          if (!m) continue;
+          const owner = m[1], repo = m[2].replace(/\.git$/, ''), key = owner + '/' + repo;
+          checked++;
+          try {
+            const head = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/commits?per_page=1', { headers: { 'Accept': 'application/vnd.github+json' } }).then(x => x.json());
+            const sha = Array.isArray(head) && head[0] ? head[0].sha : null;
+            if (!sha || C.autotrack.lastSeen[key] === sha) continue; // no new commit
+            const ctx = await githubContext(owner, repo);
+            const langLine = r.lang === 'tr' ? 'Öncelikli dil Türkçe.' : r.lang === 'en' ? 'Primary language English.' : 'TR + EN.';
+            const obj = parseJsonLoose(await llmChat(BLOG_SYS + '\n' + langLine,
+              [{ role: 'user', content: 'GitHub repo activity:\n' + ctx + '\n\nWrite a detailed devlog blog post about the recent progress.' }], true));
+            let cover = '';
+            if (obj.image_query && Admin.unsplashKey) { try { cover = await unsplashImage(obj.image_query); } catch (e) {} }
+            if (!C.blog) C.blog = [];
+            C.blog.unshift({
+              slug: slugify((obj.title_en || obj.title_tr || repo) + '-' + Date.now().toString(36)),
+              date: new Date().toISOString().slice(0, 10), cover: cover,
+              title: { tr: obj.title_tr || '', en: obj.title_en || '' },
+              excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
+              body: { tr: obj.body_tr || '', en: obj.body_en || '' },
+            });
+            C.autotrack.lastSeen[key] = sha;
+            made++;
+          } catch (e) { errs.push(key + ': ' + (e.message || e)); }
+        }
+        await saveNow();
+        renderPanel();
+        const fresh = document.getElementById('repo-ok'), freshErr = document.getElementById('repo-err');
+        if (fresh) { fresh.textContent = made ? (made + ' ' + t.autotrack_result_1 + ' (' + checked + ' repo)') : t.autotrack_none; fresh.style.display = 'block'; }
+        if (errs.length && freshErr) { freshErr.textContent = t.ai_err + ': ' + errs.join(' · '); freshErr.style.display = 'block'; }
+        break;
+      }
       case 'ai-generate': {
         const okEl = document.getElementById('ai-ok'), errEl = document.getElementById('ai-err');
         okEl.style.display = 'none'; errEl.style.display = 'none';
