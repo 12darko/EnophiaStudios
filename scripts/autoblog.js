@@ -9,7 +9,20 @@
 
 const admin = require('firebase-admin');
 
-const svc = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+// Not configured yet? Skip cleanly (green), don't spam red failures every 30 min.
+const rawSvc = process.env.FIREBASE_SERVICE_ACCOUNT;
+if (!rawSvc || !rawSvc.trim()) {
+  console.log('FIREBASE_SERVICE_ACCOUNT secret is not set — auto-blog is disabled. '
+    + 'See README → "Otomatik devlog" to enable it.');
+  process.exit(0);
+}
+let svc;
+try {
+  svc = JSON.parse(rawSvc);
+} catch (e) {
+  console.error('FIREBASE_SERVICE_ACCOUNT is not valid JSON. Paste the ENTIRE service account .json file content into the secret.');
+  process.exit(1);
+}
 admin.initializeApp({ credential: admin.credential.cert(svc) });
 const db = admin.firestore();
 
