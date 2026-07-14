@@ -145,6 +145,25 @@ Aynı şekilde **blog yazısı**, **ekip üyesi**, **"yakında" kartı** ekleyip
 
 ---
 
+## Otomatik devlog (repo takibi)
+
+Admin panelde **“Repo Takibi”** bölümüne GitHub repo linklerini ekle. İki şekilde çalışır:
+
+- **Elle (kurulum yok):** “Yeni commit’leri kontrol et ve üret” butonu. Her repoda son kontrolden beri yeni commit varsa, commit’leri + README’yi analiz edip bir devlog yazısı üretir (otomatik Unsplash kapağıyla). Aynı commit için tekrar üretmez.
+- **Tam otomatik (zamanlı):** [.github/workflows/autoblog.yml](.github/workflows/autoblog.yml) her 30 dakikada bir [scripts/autoblog.js](scripts/autoblog.js)’i çalıştırır; yeni commit olan repolar için otomatik yazı üretip **Firestore’a** yazar (panelde de düzenlenebilir/silinebilir).
+
+### Tam otomatik kurulumu (bir kere)
+
+1. **Firebase servis hesabı anahtarı al:** Firebase Console → ⚙️ **Project settings → Service accounts → Generate new private key** → bir `.json` dosyası iner.
+2. **GitHub secret ekle:** repo → **Settings → Secrets and variables → Actions → New repository secret** → ad: **`FIREBASE_SERVICE_ACCOUNT`**, değer: o JSON dosyasının **tamamını** yapıştır.
+3. Bir de AI anahtarını (Gemini/Groq) ve istersen Unsplash anahtarını **admin panelden** girmiş ol (bunlar Firestore’da; script oradan okur).
+4. Hepsi bu. Workflow 30 dakikada bir kendiliğinden çalışır; hemen denemek için repo → **Actions → Auto blog from repos → Run workflow**.
+
+> **Not:** “Commit düştüğü an” değil, **~30 dakikada bir** kontrol eder (statik sitede 7/24 sunucu olmadığı için; aralığı `autoblog.yml` içindeki `cron` ile değiştirebilirsin). Repo herkese açıksa GitHub Actions dakikaları sınırsızdır; özel repoda daha uzun aralık (ör. saatte bir) seçmek dakika tasarrufu sağlar.
+> **Servis hesabı anahtarı gizlidir** — yalnızca GitHub Secrets’a yapıştırılır, koda/git’e girmez. Firestore’a tam erişim verdiği için kimseyle paylaşma.
+
+---
+
 ## Güvenlik
 
 - **Taşıma şifrelemesi (HTTPS/TLS):** Firebase Hosting her zaman HTTPS sunar; tarayıcı ile Google sunucuları arasındaki tüm trafik şifrelidir. ("Uçtan uca şifreleme" mesajlaşma uygulamaları için bir kavramdır — herkese açık bir sitenin içeriği zaten herkese okunur olmalı; burada doğru koruma TLS + yazma yetkisi kontrolüdür.)

@@ -1,0 +1,36 @@
+# Otomatik devlog: takip edilen GitHub repolarinda yeni commit varsa,
+# yapay zeka ile blog yazisi uretip Firestore'a yazar.
+#
+# Gerekli secret:
+#   FIREBASE_SERVICE_ACCOUNT  -> Firebase servis hesabi JSON'unun TAMAMI
+#   (Firebase Console -> Project settings -> Service accounts -> Generate new private key)
+#
+# Repolar ve AI anahtarlari zaten Firestore'da (admin panelinden girilir),
+# script onlari servis hesabiyla okur. Calisma araligini asagidaki cron ile ayarla.
+
+name: Auto blog from repos
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # her 30 dakikada bir (istersen degistir: '0 * * * *' = saatte bir)
+  workflow_dispatch:          # Actions sekmesinden elle de calistirilabilir
+
+concurrency:
+  group: autoblog
+  cancel-in-progress: true
+
+jobs:
+  autoblog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install firebase-admin
+        run: npm install firebase-admin@^12 --no-save
+      - name: Generate posts from new commits
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/autoblog.js
