@@ -33,7 +33,9 @@ const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent 
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
   + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
   + 'title: short and catchy. excerpt: 1-2 sentences. body: 4-6 short paragraphs, natural devlog tone, plain text (no markdown). '
-  + 'image_query: 2-4 English keywords for a fitting stock cover photo. '
+  + 'image_query: 2-4 English keywords describing an ATMOSPHERIC, CINEMATIC scene or environment that suits a dark-fantasy / mythology indie game — NOT the technical devlog topic. '
+  + 'Good examples: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk", "stormy sea mythology", "cinematic night sky stars", "abstract glowing particles". '
+  + 'Never use software, coding, computer, office or desk words. '
   + 'The _tr fields in Turkish, the _en fields in English (same post, not word-for-word).';
 
 async function ghJson(url) {
@@ -83,7 +85,7 @@ async function llmJson(provider, secrets, system, userText) {
     if (!r.ok) throw new Error((d.error && d.error.message) || ('groq ' + r.status));
     return d.choices[0].message.content;
   }
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(secrets.geminiKey), {
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(secrets.geminiKey), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: userText }] }],
@@ -97,9 +99,11 @@ async function llmJson(provider, secrets, system, userText) {
 async function unsplash(key, query) {
   if (!key || !query) return '';
   try {
-    const r = await fetch('https://api.unsplash.com/search/photos?per_page=1&orientation=landscape&query=' + encodeURIComponent(query), { headers: { 'Authorization': 'Client-ID ' + key } });
+    const r = await fetch('https://api.unsplash.com/search/photos?per_page=8&orientation=landscape&content_filter=high&query=' + encodeURIComponent(query), { headers: { 'Authorization': 'Client-ID ' + key } });
     const d = await r.json();
-    const x = d && d.results && d.results[0];
+    const results = (d && d.results) || [];
+    if (!results.length) return '';
+    const x = results[Math.floor(Math.random() * results.length)];
     return x ? (x.urls.regular || x.urls.small || '') : '';
   } catch (e) { return ''; }
 }
@@ -114,6 +118,9 @@ function slugify(s) {
 (async () => {
   const contentRef = db.collection('site').doc('content');
   const secrets = (await db.collection('site').doc('secrets').get()).data() || {};
+  // Private tracked repos: use the token stored in the panel (Firestore secrets) unless
+  // an env GH_TOKEN was already provided to the Action.
+  if (secrets.githubToken && !GH_HEADERS['Authorization']) GH_HEADERS['Authorization'] = 'Bearer ' + secrets.githubToken;
   const provider = secrets.aiProvider === 'groq' ? 'groq' : 'gemini';
   if (provider === 'gemini' && !secrets.geminiKey) return console.log('No Gemini key — nothing to do.');
   if (provider === 'groq' && !secrets.groqKey) return console.log('No Groq key — nothing to do.');

@@ -16,6 +16,7 @@ const Admin = {
   geminiKey: '',      // cached in memory; persisted in Firestore site/secrets (admin-only)
   groqKey: '',
   unsplashKey: '',
+  githubToken: '',    // optional GitHub PAT for private repo tracking
   provider: 'gemini', // 'gemini' | 'groq'
   aiSource: 'youtube',
   chat: [],           // ephemeral chat transcript (not saved)
@@ -121,6 +122,7 @@ async function loadSecrets() {
       Admin.geminiKey = s.geminiKey || '';
       Admin.groqKey = s.groqKey || '';
       Admin.unsplashKey = s.unsplashKey || '';
+      Admin.githubToken = s.githubToken || '';
       if (s.aiProvider === 'groq' || s.aiProvider === 'gemini') Admin.provider = s.aiProvider;
     }
   } catch (e) { /* rules deny read unless authed — safe to ignore */ }
@@ -160,7 +162,7 @@ async function llmChat(system, history, wantJson) {
   }
   if (!Admin.geminiKey) throw new Error('no-key');
   const contents = msgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(Admin.geminiKey), {
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(Admin.geminiKey), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents,
       generationConfig: { temperature: 0.7, responseMimeType: wantJson ? 'application/json' : 'text/plain' } }),
@@ -171,26 +173,33 @@ async function llmChat(system, history, wantJson) {
 }
 
 // Find a royalty-free cover image on Unsplash (LLMs can't browse the web themselves).
+// Pull the top few relevant landscape photos and pick one at random so covers vary
+// between posts instead of always returning the single #1 result.
 async function unsplashImage(query) {
   if (!Admin.unsplashKey || !query) return '';
   try {
-    const res = await fetch('https://api.unsplash.com/search/photos?per_page=1&orientation=landscape&query=' + encodeURIComponent(query), {
+    const res = await fetch('https://api.unsplash.com/search/photos?per_page=8&orientation=landscape&content_filter=high&query=' + encodeURIComponent(query), {
       headers: { 'Authorization': 'Client-ID ' + Admin.unsplashKey },
     });
     const data = await res.json();
-    const r = data && data.results && data.results[0];
+    const results = (data && data.results) || [];
+    if (!results.length) return '';
+    const r = results[Math.floor(Math.random() * results.length)];
     return r ? (r.urls.regular || r.urls.small || '') : '';
   } catch (e) { return ''; }
 }
 
-// Fetch a public GitHub repo's recent activity (no auth needed) to feed the LLM.
+// Fetch a GitHub repo's recent activity to feed the LLM. Public repos need no auth;
+// a stored GitHub token (Admin.githubToken) unlocks private repos + a higher rate limit.
 // The LLM can't browse the web, so we gather the material and hand it over.
 async function githubContext(owner, repo) {
   const H = { 'Accept': 'application/vnd.github+json' };
+  if (Admin.githubToken) H['Authorization'] = 'Bearer ' + Admin.githubToken;
   const base = 'https://api.github.com/repos/' + owner + '/' + repo;
   const repoRes = await fetch(base, { headers: H });
   if (!repoRes.ok) {
-    throw new Error(repoRes.status === 404 ? 'repo bulunamadı'
+    throw new Error(repoRes.status === 404 ? 'repo bulunamadı (özel repo ise GitHub token gir)'
+      : repoRes.status === 401 ? 'GitHub token geçersiz'
       : repoRes.status === 403 ? 'GitHub API limiti (biraz sonra dene)' : 'GitHub ' + repoRes.status);
   }
   const info = await repoRes.json();
@@ -219,14 +228,16 @@ const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent 
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
   + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
   + 'title: short and catchy. excerpt: 1-2 sentences. body: 3-6 short paragraphs, natural devlog tone, plain text (no markdown). '
-  + 'image_query: 2-4 English keywords for a fitting stock cover photo. '
+  + 'image_query: 2-4 English keywords describing an ATMOSPHERIC, CINEMATIC scene or environment that suits a dark-fantasy / mythology indie game — NOT the technical devlog topic. '
+  + 'Good examples: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk", "stormy sea mythology", "cinematic night sky stars", "abstract glowing particles". '
+  + 'Never use software, coding, computer, office or desk words. '
   + 'The _tr fields in Turkish, the _en fields in English (same post, not word-for-word).';
 
 // One-shot generator (AI Blog Üreteci). source = { type:'youtube'|'topic', value }
 async function generateBlog(source) {
   if (source.type === 'youtube') {
     if (!Admin.geminiKey) throw new Error('YouTube: Gemini');
-    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(Admin.geminiKey), {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(Admin.geminiKey), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: BLOG_SYS }] },
         contents: [{ role: 'user', parts: [{ fileData: { fileUri: source.value } }, { text: 'Write the post based on the linked video.' }] }],
@@ -242,11 +253,14 @@ async function generateBlog(source) {
 // ---------------- chat assistant (edits any content, with a confirm step) ----------------
 function agentContext() {
   const C = App.content;
-  return 'CURRENT CONTENT (reference for indices/paths):\n' + JSON.stringify({
+  // Give the assistant enough to actually ANALYSE the studio (games, tone, existing
+  // copy) before proposing vision/mission-style rewrites — not just the editable paths.
+  return 'CURRENT CONTENT (studyoyu analiz etmek + path/index referansi icin):\n' + JSON.stringify({
     hero: C.hero, vision: C.vision, mission: C.mission, story: C.story,
-    about: C.about, contact: C.contact, links: C.links,
+    about: C.about, contact: C.contact, links: C.links, next: C.next,
     team: C.team.map((m, i) => ({ i: i, name: m.name, role: m.role })),
-    games: C.games.map((g, i) => ({ i: i, title: g.title, tagline: g.tagline, genre: g.genre })),
+    games: C.games.map((g, i) => ({ i: i, title: g.title, genre: g.genre, tagline: g.tagline, story: g.story })),
+    blogCount: Array.isArray(C.blog) ? C.blog.length : 0,
     updates: C.updates,
   });
 }
@@ -257,11 +271,15 @@ const AGENT_SYS = [
   'Sema: {"reply":"kullaniciya kisa Turkce yanit","actions":[...]}.',
   'actions bos [] olabilir (sadece sohbet/soru ise). Action tipleri:',
   '- Blog ekle: {"type":"add_post","title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query":"2-4 ingilizce anahtar kelime ya da bos"}',
+  '  image_query: teknik konuyu DEGIL, karanlik-fantezi / mitoloji temali bir oyuna yakisan ATMOSFERIK bir sahne/ortam tarif et (or: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk"). Yazilim/kod/bilgisayar/ofis kelimeleri KULLANMA.',
   '- Alan degistir: {"type":"set","path":"NOKTALI_YOL","value":"YENI DEGER"}',
   'Gecerli path ornekleri: hero.title.tr, hero.title.en, hero.sub.tr, hero.sub.en, vision.tr, vision.en, mission.tr, mission.en, story.tr, story.en, about.lead.tr, about.lead.en, contact.sub.tr, contact.sub.en, links.email, links.itch, links.youtube1, links.youtube2, team.0.name, team.0.role.tr, team.0.role.en, games.0.title, games.0.tagline.tr, games.0.genre.tr, updates.count.',
   'Iki dilli bir alani degistiriyorsan hem .tr hem .en icin AYRI set action uret. Metinlerde markdown kullanma.',
+  'SITE/PROJE ANALIZI: CURRENT CONTENT sana studyonun tum metinlerini ve oyunlarini (tur, tagline, hikaye) verir. Vizyon/misyon/hero/about/story gibi tanitim metinlerini "iyilestir / daha iyi yap / guncelle / profesyonellestir" denirse: once bu oyunlari, ortak temayi (or: mitoloji, karanlik-fantezi, atmosferik bulmaca) ve mevcut tonu ANALIZ et; sonra bu analize DAYALI, tutarli ve profesyonel bir oneri uret (ilgili set action(lar)i + onay adimi). Bu durumda "iyilestir" yeterli bir yondur, tekrar sorma.',
+  'Metni yeniden yazarken: stüdyonun GERCEK bilgilerine (oyunlar, tema, ekip) dayan, olmayan oyun/ozellik/iddia/rakam UYDURMA; profesyonel, öz ve akici bir dil kullan (abartili pazarlama dili, klise ve süslü laf yok); mevcut uzunluga yakin kal. Türkçe alanlarda dogal Türkçe, İngilizce alanlarda dogal İngilizce (birebir çeviri degil).',
+  'Ama istek TAMAMEN bos/yonsuzse ya da hangi alani kastettigi belirsizse metni UYDURMA; actions bos birak ve reply ile kisaca ne istedigini sor.',
   'Yeni oyun veya ekip uyesi EKLEMEK gibi seyleri su an desteklemiyorsun; oyle bir istekte actions bos birak ve reply icinde bunun panelden yapilmasi gerektigini soyle.',
-  'Emin olmadigin istekte degisiklik yapma; actions bos birak ve reply ile sor.',
+  'Emin olmadigin HER istekte degisiklik yapma; actions bos birak ve reply ile sor.',
 ].join('\n');
 
 const CONTENT_TOP = ['hero', 'vision', 'mission', 'story', 'about', 'contact', 'links', 'team', 'games', 'next', 'updates'];
@@ -573,6 +591,12 @@ function renderPanel() {
     + '</div>'
   ).join('');
   const repoBody = '<p class="hint" style="margin:0 0 16px;">' + t.autotrack_note + '</p>'
+    + '<div class="field"><label>' + t.github_token_label
+      + ' · <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color:#5bc0be; text-decoration:none;">' + t.github_token_get + '</a></label>'
+      + '<div class="key-row"><input class="input" type="password" id="github-token" placeholder="' + esc(t.github_token_ph) + '"' + (Admin.githubToken ? ' value="••••••••••••"' : '') + '>'
+      + '<button type="button" class="tb-btn tb-ghost" data-action="ai-save-github">' + t.ai_key_save + '</button></div>'
+      + '<p class="hint" style="margin:6px 0 0; font-size:12px;">' + t.github_token_note + '</p>'
+      + '<p class="form-ok" id="github-msg" style="display:' + (Admin.githubToken ? 'block' : 'none') + ';">' + t.ai_key_saved + '</p></div>'
     + repoRows
     + '<button type="button" class="mini-add" data-action="repo-add">' + t.autotrack_add + '</button>'
     + '<div style="margin-top:22px;"><button type="button" class="tb-btn tb-primary" id="repo-check-btn" data-action="repo-check">' + t.autotrack_check + '</button></div>'
@@ -797,6 +821,21 @@ function bindPanel() {
           inp.value = '••••••••••••';
         } catch (err) {
           const errEl = document.getElementById('ai-err');
+          errEl.textContent = t.ai_err + ': ' + (err.message || err); errEl.style.display = 'block';
+        }
+        break;
+      }
+      case 'ai-save-github': {
+        const inp = document.getElementById('github-token');
+        const val = (inp.value || '').trim();
+        if (val.charAt(0) === '•') return; // unchanged mask
+        try {
+          await saveSecret('githubToken', val);
+          Admin.githubToken = val;
+          document.getElementById('github-msg').style.display = 'block';
+          inp.value = val ? '••••••••••••' : '';
+        } catch (err) {
+          const errEl = document.getElementById('repo-err');
           errEl.textContent = t.ai_err + ': ' + (err.message || err); errEl.style.display = 'block';
         }
         break;
