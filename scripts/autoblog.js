@@ -26,8 +26,17 @@ try {
 admin.initializeApp({ credential: admin.credential.cert(svc) });
 const db = admin.firestore();
 
-const GH_HEADERS = { 'Accept': 'application/vnd.github+json', 'User-Agent': 'enophia-autoblog' };
-if (process.env.GH_TOKEN) GH_HEADERS['Authorization'] = 'Bearer ' + process.env.GH_TOKEN;
+const GH_BASE_HEADERS = { 'Accept': 'application/vnd.github+json', 'User-Agent': 'enophia-autoblog' };
+
+// Per-repo GitHub token: the repo's own token wins, else the default secrets.githubToken,
+// else an env GH_TOKEN provided to the Action. Public repos work with no token at all.
+function ghHeaders(secrets, owner, repo) {
+  const H = Object.assign({}, GH_BASE_HEADERS);
+  const key = (owner + '/' + repo).toLowerCase();
+  const tok = (secrets.repoTokens && secrets.repoTokens[key]) || secrets.githubToken || process.env.GH_TOKEN || '';
+  if (tok) H['Authorization'] = 'Bearer ' + tok;
+  return H;
+}
 
 const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
@@ -38,20 +47,20 @@ const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent 
   + 'Never use software, coding, computer, office or desk words. '
   + 'The _tr fields in Turkish, the _en fields in English (same post, not word-for-word).';
 
-async function ghJson(url) {
-  const r = await fetch(url, { headers: GH_HEADERS });
+async function ghJson(url, headers) {
+  const r = await fetch(url, { headers });
   if (!r.ok) throw new Error('GitHub ' + r.status);
   return r.json();
 }
 
-async function githubContext(owner, repo) {
+async function githubContext(owner, repo, headers) {
   const base = 'https://api.github.com/repos/' + owner + '/' + repo;
-  const info = await ghJson(base);
+  const info = await ghJson(base, headers);
   let commits = [];
-  try { commits = await ghJson(base + '/commits?per_page=20'); } catch (e) {}
+  try { commits = await ghJson(base + '/commits?per_page=20', headers); } catch (e) {}
   let readme = '';
   try {
-    const rd = await ghJson(base + '/readme');
+    const rd = await ghJson(base + '/readme', headers);
     if (rd && rd.content) readme = Buffer.from(rd.content, 'base64').toString('utf8').slice(0, 1800);
   } catch (e) {}
   const list = Array.isArray(commits) ? commits : [];
@@ -118,9 +127,6 @@ function slugify(s) {
 (async () => {
   const contentRef = db.collection('site').doc('content');
   const secrets = (await db.collection('site').doc('secrets').get()).data() || {};
-  // Private tracked repos: use the token stored in the panel (Firestore secrets) unless
-  // an env GH_TOKEN was already provided to the Action.
-  if (secrets.githubToken && !GH_HEADERS['Authorization']) GH_HEADERS['Authorization'] = 'Bearer ' + secrets.githubToken;
   const provider = secrets.aiProvider === 'groq' ? 'groq' : 'gemini';
   if (provider === 'gemini' && !secrets.geminiKey) return console.log('No Gemini key — nothing to do.');
   if (provider === 'groq' && !secrets.groqKey) return console.log('No Groq key — nothing to do.');
@@ -137,7 +143,7 @@ function slugify(s) {
     if (!m) continue;
     const owner = m[1], repo = m[2].replace(/\.git$/, ''), key = owner + '/' + repo;
     try {
-      const ctx = await githubContext(owner, repo);
+      const ctx = await githubContext(owner, repo, ghHeaders(secrets, owner, repo));
       if (!ctx.headSha || lastSeen[key] === ctx.headSha) { console.log(key, '→ no new commit'); continue; }
       const langLine = r.lang === 'tr' ? 'Primary Turkish.' : r.lang === 'en' ? 'Primary English.' : 'TR + EN.';
       const obj = parseLoose(await llmJson(provider, secrets, BLOG_SYS + '\n' + langLine,

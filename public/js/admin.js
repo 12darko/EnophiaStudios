@@ -16,7 +16,8 @@ const Admin = {
   geminiKey: '',      // cached in memory; persisted in Firestore site/secrets (admin-only)
   groqKey: '',
   unsplashKey: '',
-  githubToken: '',    // optional GitHub PAT for private repo tracking
+  githubToken: '',    // default GitHub PAT (fallback for all tracked repos)
+  repoTokens: {},     // per-repo PAT map: "owner/repo" (lowercased) -> token; overrides githubToken
   provider: 'gemini', // 'gemini' | 'groq'
   aiSource: 'youtube',
   chat: [],           // ephemeral chat transcript (not saved)
@@ -123,6 +124,7 @@ async function loadSecrets() {
       Admin.groqKey = s.groqKey || '';
       Admin.unsplashKey = s.unsplashKey || '';
       Admin.githubToken = s.githubToken || '';
+      Admin.repoTokens = (s.repoTokens && typeof s.repoTokens === 'object') ? s.repoTokens : {};
       if (s.aiProvider === 'groq' || s.aiProvider === 'gemini') Admin.provider = s.aiProvider;
     }
   } catch (e) { /* rules deny read unless authed — safe to ignore */ }
@@ -189,12 +191,23 @@ async function unsplashImage(query) {
   } catch (e) { return ''; }
 }
 
+// Resolve the GitHub token for a repo: the repo's own token wins, else the default one.
+function repoToken(owner, repo) {
+  const key = (owner + '/' + repo).toLowerCase();
+  return (Admin.repoTokens && Admin.repoTokens[key]) || Admin.githubToken || '';
+}
+function ghHeaders(owner, repo) {
+  const H = { 'Accept': 'application/vnd.github+json' };
+  const tok = repoToken(owner, repo);
+  if (tok) H['Authorization'] = 'Bearer ' + tok;
+  return H;
+}
+
 // Fetch a GitHub repo's recent activity to feed the LLM. Public repos need no auth;
-// a stored GitHub token (Admin.githubToken) unlocks private repos + a higher rate limit.
+// a stored GitHub token (per-repo or default) unlocks private repos + a higher rate limit.
 // The LLM can't browse the web, so we gather the material and hand it over.
 async function githubContext(owner, repo) {
-  const H = { 'Accept': 'application/vnd.github+json' };
-  if (Admin.githubToken) H['Authorization'] = 'Bearer ' + Admin.githubToken;
+  const H = ghHeaders(owner, repo);
   const base = 'https://api.github.com/repos/' + owner + '/' + repo;
   const repoRes = await fetch(base, { headers: H });
   if (!repoRes.ok) {
@@ -578,8 +591,11 @@ function renderPanel() {
 
   // ---- repo tracking (auto blog) ----
   const at = C.autotrack || { repos: [], lastSeen: {} };
-  const repoRows = (at.repos || []).map((r, i) =>
-    '<div class="row-sep"><div class="grid-2">'
+  const repoRows = (at.repos || []).map((r, i) => {
+    const rm = String(r.url || '').match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
+    const rkey = rm ? (rm[1] + '/' + rm[2].replace(/\.git$/, '')).toLowerCase() : '';
+    const hasTok = !!(rkey && Admin.repoTokens[rkey]);
+    return '<div class="row-sep"><div class="grid-2">'
     + fld('GitHub repo URL', 'autotrack.repos.' + i + '.url', r.url || '')
     + '<div class="field"><label>' + t.autotrack_lang + '</label>'
       + '<select class="input" data-path="autotrack.repos.' + i + '.lang">'
@@ -587,9 +603,13 @@ function renderPanel() {
       + '<option value="tr"' + (r.lang === 'tr' ? ' selected' : '') + '>TR</option>'
       + '<option value="en"' + (r.lang === 'en' ? ' selected' : '') + '>EN</option></select></div>'
     + '</div>'
+    + '<div class="field"><label>' + t.github_token_label + '</label>'
+      + '<div class="key-row"><input class="input" type="password" id="repo-token-' + i + '" placeholder="' + esc(t.github_token_ph) + '"' + (hasTok ? ' value="••••••••••••"' : '') + '>'
+      + '<button type="button" class="tb-btn tb-ghost" data-action="repo-save-token" data-idx="' + i + '">' + t.ai_key_save + '</button></div>'
+      + '<p class="hint" style="margin:6px 0 0; font-size:12px;">' + t.github_token_row_note + '</p></div>'
     + '<button type="button" class="mini-danger" data-action="repo-remove" data-idx="' + i + '">' + t.admin_remove_member + '</button>'
-    + '</div>'
-  ).join('');
+    + '</div>';
+  }).join('');
   const repoBody = '<p class="hint" style="margin:0 0 16px;">' + t.autotrack_note + '</p>'
     + '<div class="field"><label>' + t.github_token_label
       + ' · <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color:#5bc0be; text-decoration:none;">' + t.github_token_get + '</a></label>'
@@ -899,6 +919,28 @@ function bindPanel() {
         C.autotrack.repos.splice(idx, 1);
         await saveNow(); renderPanel();
         break;
+      case 'repo-save-token': {
+        const r = (C.autotrack && C.autotrack.repos) ? C.autotrack.repos[idx] : null;
+        const inp = document.getElementById('repo-token-' + idx);
+        const errEl = document.getElementById('repo-err'), okEl = document.getElementById('repo-ok');
+        if (errEl) errEl.style.display = 'none';
+        if (okEl) okEl.style.display = 'none';
+        if (!r || !inp) return;
+        const val = (inp.value || '').trim();
+        if (val.charAt(0) === '•') return; // unchanged mask
+        const m = String(r.url || '').match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
+        if (!m) { if (errEl) { errEl.textContent = t.github_token_need_url; errEl.style.display = 'block'; } return; }
+        const key = (m[1] + '/' + m[2].replace(/\.git$/, '')).toLowerCase();
+        try {
+          Admin.repoTokens[key] = val; // '' clears it (falls back to default token)
+          await saveSecret('repoTokens', Admin.repoTokens);
+          inp.value = val ? '••••••••••••' : '';
+          if (okEl) { okEl.textContent = t.ai_key_saved; okEl.style.display = 'block'; }
+        } catch (err) {
+          if (errEl) { errEl.textContent = t.ai_err + ': ' + (err.message || err); errEl.style.display = 'block'; }
+        }
+        break;
+      }
       case 'repo-check': {
         const okEl = document.getElementById('repo-ok'), errEl = document.getElementById('repo-err');
         okEl.style.display = 'none'; errEl.style.display = 'none';
@@ -916,8 +958,12 @@ function bindPanel() {
           const owner = m[1], repo = m[2].replace(/\.git$/, ''), key = owner + '/' + repo;
           checked++;
           try {
-            const head = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/commits?per_page=1', { headers: { 'Accept': 'application/vnd.github+json' } }).then(x => x.json());
-            const sha = Array.isArray(head) && head[0] ? head[0].sha : null;
+            const head = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/commits?per_page=1', { headers: ghHeaders(owner, repo) }).then(x => x.json());
+            if (!Array.isArray(head)) { // 404/401/403 → private repo without a valid token, or rate limit
+              errs.push(key + ': ' + ((head && head.message) || 'repo okunamadı') + ' (private ise token gir)');
+              continue;
+            }
+            const sha = head[0] ? head[0].sha : null;
             if (!sha || C.autotrack.lastSeen[key] === sha) continue; // no new commit
             const ctx = await githubContext(owner, repo);
             const langLine = r.lang === 'tr' ? 'Öncelikli dil Türkçe.' : r.lang === 'en' ? 'Primary language English.' : 'TR + EN.';
