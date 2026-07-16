@@ -240,11 +240,19 @@ async function githubContext(owner, repo) {
 const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
   + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
-  + 'title: short and catchy. excerpt: 1-2 sentences. body: 3-6 short paragraphs, natural devlog tone, plain text (no markdown). '
+  + 'title: short and catchy. excerpt: 1-2 sentences. body: 3-6 short paragraphs, plain text (no markdown). '
+  + 'TONE: write like a REAL indie dev casually sharing progress with players — warm, natural, first person plural ("biz"/"we"), a little personality and humour. NOT corporate, NOT marketing hype, NOT robotic. Avoid AI/marketing cliches ("heyecanla duyuruyoruz", "oyun dunyasinda", "stay tuned", "thrilled to announce", "delve", "game-changer", "bir adim daha"). Short, human sentences, like talking to a friend. '
   + 'image_query: 2-4 English keywords describing an ATMOSPHERIC, CINEMATIC scene or environment that suits a dark-fantasy / mythology indie game — NOT the technical devlog topic. '
   + 'Good examples: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk", "stormy sea mythology", "cinematic night sky stars", "abstract glowing particles". '
   + 'Never use software, coding, computer, office or desk words. '
-  + 'The _tr fields in Turkish, the _en fields in English (same post, not word-for-word).';
+  + 'The _tr fields in NATURAL Turkish, the _en fields in natural English (same post, not word-for-word). '
+  + 'Turkish text MUST use correct Turkish letters (c->ç, g->ğ, i->ı/İ, o->ö, s->ş, u->ü where appropriate) and grammar — NEVER ASCII-ise it (write "Karanlık Fantezi Dünyamıza Doğru", never "Karanlik Fantazi Dunyamiza Dogru").';
+
+// Repo tracking only: let the model skip trivial commits instead of posting on every push.
+const REPO_SKIP_RULE = 'Also include a boolean field "skip" in the JSON. '
+  + 'If the recent commits are only trivial/minor (typo, formatting/whitespace, "wip", config or dependency bumps, '
+  + 'merge commits, renames, tiny fixes) and not worth a public devlog, set "skip":true and leave the post fields empty. '
+  + 'Only write an actual post ("skip":false) when the changes are meaningful progress a player/reader would care about.';
 
 // One-shot generator (AI Blog Üreteci). source = { type:'youtube'|'topic', value }
 async function generateBlog(source) {
@@ -289,7 +297,7 @@ const AGENT_SYS = [
   'Gecerli path ornekleri: hero.title.tr, hero.title.en, hero.sub.tr, hero.sub.en, vision.tr, vision.en, mission.tr, mission.en, story.tr, story.en, about.lead.tr, about.lead.en, contact.sub.tr, contact.sub.en, links.email, links.itch, links.youtube1, links.youtube2, team.0.name, team.0.role.tr, team.0.role.en, games.0.title, games.0.tagline.tr, games.0.genre.tr, updates.count.',
   'Iki dilli bir alani degistiriyorsan hem .tr hem .en icin AYRI set action uret. Metinlerde markdown kullanma.',
   'SITE/PROJE ANALIZI: CURRENT CONTENT sana studyonun tum metinlerini ve oyunlarini (tur, tagline, hikaye) verir. Vizyon/misyon/hero/about/story gibi tanitim metinlerini "iyilestir / daha iyi yap / guncelle / profesyonellestir" denirse: once bu oyunlari, ortak temayi (or: mitoloji, karanlik-fantezi, atmosferik bulmaca) ve mevcut tonu ANALIZ et; sonra bu analize DAYALI, tutarli ve profesyonel bir oneri uret (ilgili set action(lar)i + onay adimi). Bu durumda "iyilestir" yeterli bir yondur, tekrar sorma.',
-  'Metni yeniden yazarken: stüdyonun GERCEK bilgilerine (oyunlar, tema, ekip) dayan, olmayan oyun/ozellik/iddia/rakam UYDURMA; profesyonel, öz ve akici bir dil kullan (abartili pazarlama dili, klise ve süslü laf yok); mevcut uzunluga yakin kal. Türkçe alanlarda dogal Türkçe, İngilizce alanlarda dogal İngilizce (birebir çeviri degil).',
+  'Metni yeniden yazarken: stüdyonun GERCEK bilgilerine (oyunlar, tema, ekip) dayan, olmayan oyun/ozellik/iddia/rakam UYDURMA; INSAN gibi dogal, samimi ve akici yaz (abartili pazarlama dili, yapay-zeka klisesi ve süslü laf yok); mevcut uzunluga yakin kal. Türkçe alanlarda MUTLAKA dogru Türkçe harflerle (ç ğ ı İ ö ş ü) dogal Türkçe, İngilizce alanlarda dogal İngilizce (birebir çeviri degil).',
   'Ama istek TAMAMEN bos/yonsuzse ya da hangi alani kastettigi belirsizse metni UYDURMA; actions bos birak ve reply ile kisaca ne istedigini sor.',
   'Yeni oyun veya ekip uyesi EKLEMEK gibi seyleri su an desteklemiyorsun; oyle bir istekte actions bos birak ve reply icinde bunun panelden yapilmasi gerektigini soyle.',
   'Emin olmadigin HER istekte degisiklik yapma; actions bos birak ve reply ile sor.',
@@ -951,7 +959,7 @@ function bindPanel() {
         if (!activeLlmKey()) { errEl.textContent = t.chat_key_missing; errEl.style.display = 'block'; return; }
         const cbtn = document.getElementById('repo-check-btn');
         cbtn.disabled = true; cbtn.textContent = t.autotrack_checking;
-        let made = 0, checked = 0; const errs = [];
+        let made = 0, checked = 0, skipped = 0; const errs = [];
         for (const r of repos) {
           const m = String(r.url).match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
           if (!m) continue;
@@ -967,8 +975,9 @@ function bindPanel() {
             if (!sha || C.autotrack.lastSeen[key] === sha) continue; // no new commit
             const ctx = await githubContext(owner, repo);
             const langLine = r.lang === 'tr' ? 'Öncelikli dil Türkçe.' : r.lang === 'en' ? 'Primary language English.' : 'TR + EN.';
-            const obj = parseJsonLoose(await llmChat(BLOG_SYS + '\n' + langLine,
-              [{ role: 'user', content: 'GitHub repo activity:\n' + ctx + '\n\nWrite a detailed devlog blog post about the recent progress.' }], true));
+            const obj = parseJsonLoose(await llmChat(BLOG_SYS + '\n' + langLine + '\n' + REPO_SKIP_RULE,
+              [{ role: 'user', content: 'GitHub repo activity:\n' + ctx + '\n\nDecide if this is worth a devlog post; if yes, write it.' }], true));
+            if (obj && obj.skip === true) { C.autotrack.lastSeen[key] = sha; skipped++; continue; } // trivial commits — no post
             let cover = '';
             if (obj.image_query && Admin.unsplashKey) { try { cover = await unsplashImage(obj.image_query); } catch (e) {} }
             if (!C.blog) C.blog = [];
@@ -986,7 +995,11 @@ function bindPanel() {
         await saveNow();
         renderPanel();
         const fresh = document.getElementById('repo-ok'), freshErr = document.getElementById('repo-err');
-        if (fresh) { fresh.textContent = made ? (made + ' ' + t.autotrack_result_1 + ' (' + checked + ' repo)') : t.autotrack_none; fresh.style.display = 'block'; }
+        if (fresh) {
+          let msg = made ? (made + ' ' + t.autotrack_result_1 + ' (' + checked + ' repo)')
+            : (skipped ? (skipped + ' ' + t.autotrack_skipped) : t.autotrack_none);
+          fresh.textContent = msg; fresh.style.display = 'block';
+        }
         if (errs.length && freshErr) { freshErr.textContent = t.ai_err + ': ' + errs.join(' · '); freshErr.style.display = 'block'; }
         break;
       }

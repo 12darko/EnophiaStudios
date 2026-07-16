@@ -41,11 +41,19 @@ function ghHeaders(secrets, owner, repo) {
 const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
   + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
-  + 'title: short and catchy. excerpt: 1-2 sentences. body: 4-6 short paragraphs, natural devlog tone, plain text (no markdown). '
+  + 'title: short and catchy. excerpt: 1-2 sentences. body: 4-6 short paragraphs, plain text (no markdown). '
+  + 'TONE: write like a REAL indie dev casually sharing progress with players — warm, natural, first person plural ("biz"/"we"), a little personality and humour. NOT corporate, NOT marketing hype, NOT robotic. Avoid AI/marketing cliches ("heyecanla duyuruyoruz", "oyun dunyasinda", "stay tuned", "thrilled to announce", "delve", "game-changer", "bir adim daha"). Short, human sentences, like talking to a friend. '
   + 'image_query: 2-4 English keywords describing an ATMOSPHERIC, CINEMATIC scene or environment that suits a dark-fantasy / mythology indie game — NOT the technical devlog topic. '
   + 'Good examples: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk", "stormy sea mythology", "cinematic night sky stars", "abstract glowing particles". '
   + 'Never use software, coding, computer, office or desk words. '
-  + 'The _tr fields in Turkish, the _en fields in English (same post, not word-for-word).';
+  + 'The _tr fields in NATURAL Turkish, the _en fields in natural English (same post, not word-for-word). '
+  + 'Turkish text MUST use correct Turkish letters (ç ğ ı İ ö ş ü) and grammar — NEVER ASCII-ise it (write "Karanlık Fantezi Dünyamıza Doğru", never "Karanlik Fantazi Dunyamiza Dogru").';
+
+// Repo tracking only: let the model skip trivial commits instead of posting on every push.
+const REPO_SKIP_RULE = 'Also include a boolean field "skip" in the JSON. '
+  + 'If the recent commits are only trivial/minor (typo, formatting/whitespace, "wip", config or dependency bumps, '
+  + 'merge commits, renames, tiny fixes) and not worth a public devlog, set "skip":true and leave the post fields empty. '
+  + 'Only write an actual post ("skip":false) when the changes are meaningful progress a player/reader would care about.';
 
 async function ghJson(url, headers) {
   const r = await fetch(url, { headers });
@@ -138,6 +146,7 @@ function slugify(s) {
   if (!repos.length) return console.log('No tracked repos.');
 
   const newPosts = [];
+  let changed = false; // did lastSeen advance (post OR intentional skip)?
   for (const r of repos) {
     const m = String(r.url).match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
     if (!m) continue;
@@ -146,8 +155,9 @@ function slugify(s) {
       const ctx = await githubContext(owner, repo, ghHeaders(secrets, owner, repo));
       if (!ctx.headSha || lastSeen[key] === ctx.headSha) { console.log(key, '→ no new commit'); continue; }
       const langLine = r.lang === 'tr' ? 'Primary Turkish.' : r.lang === 'en' ? 'Primary English.' : 'TR + EN.';
-      const obj = parseLoose(await llmJson(provider, secrets, BLOG_SYS + '\n' + langLine,
-        'GitHub repo activity:\n' + ctx.text + '\n\nWrite a detailed devlog post about the recent progress.'));
+      const obj = parseLoose(await llmJson(provider, secrets, BLOG_SYS + '\n' + langLine + '\n' + REPO_SKIP_RULE,
+        'GitHub repo activity:\n' + ctx.text + '\n\nDecide if this is worth a devlog post; if yes, write it.'));
+      if (obj && obj.skip === true) { lastSeen[key] = ctx.headSha; changed = true; console.log(key, '→ skipped (minor commits)'); continue; }
       let cover = '';
       if (obj.image_query && secrets.unsplashKey) cover = await unsplash(secrets.unsplashKey, obj.image_query);
       newPosts.push({
@@ -158,17 +168,20 @@ function slugify(s) {
         body: { tr: obj.body_tr || '', en: obj.body_en || '' },
       });
       lastSeen[key] = ctx.headSha;
+      changed = true;
       console.log(key, '→ generated a post');
     } catch (e) { console.error(key, 'error:', e.message); }
   }
 
-  if (!newPosts.length) return console.log('Nothing new to publish.');
+  if (!newPosts.length && !changed) return console.log('Nothing new to publish.');
 
   // Re-read right before writing to minimise clobbering a concurrent panel edit.
   const fresh = (await contentRef.get()).data() || {};
   const freshBlog = Array.isArray(fresh.blog) ? fresh.blog : [];
   const freshAt = fresh.autotrack || at;
   freshAt.lastSeen = Object.assign({}, freshAt.lastSeen || {}, lastSeen);
-  await contentRef.set({ blog: newPosts.concat(freshBlog), autotrack: freshAt }, { merge: true });
-  console.log('Published', newPosts.length, 'post(s).');
+  const patch = { autotrack: freshAt };
+  if (newPosts.length) patch.blog = newPosts.concat(freshBlog);
+  await contentRef.set(patch, { merge: true });
+  console.log('Published', newPosts.length, 'post(s); lastSeen advanced for', Object.keys(lastSeen).length, 'repo(s).');
 })().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
