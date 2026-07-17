@@ -637,6 +637,19 @@ function renderPanel() {
       + fld(t.f_blog_date, 'blog.' + bi + '.date', p.date || '')
       + fld(t.f_blog_cover, 'blog.' + bi + '.cover', p.cover || '')
       + '</div>'
+      + '<div class="field">'
+      +   (p.cover ? '<img class="cover-preview" src="' + esc(p.cover) + '" alt="">' : '<div class="cover-preview empty">' + t.f_blog_cover_none + '</div>')
+      +   '<div class="key-row" style="margin-top:10px;">'
+      +     '<input class="input" id="blog-cover-kw" placeholder="' + esc(t.f_blog_cover_kw_ph) + '">'
+      +     '<button type="button" class="tb-btn tb-ghost" id="blog-cover-btn" data-action="blog-cover-search">' + t.f_blog_cover_find + '</button>'
+      +   '</div>'
+      +   '<p class="hint" style="margin:6px 0 0; font-size:12px;">' + t.f_blog_cover_hint + '</p>'
+      +   '<p class="form-error" id="blog-cover-err" style="display:none;"></p>'
+      + '</div>'
+      + '<div class="grid-2">'
+      + fld(t.f_blog_cover_label, 'blog.' + bi + '.coverLabel', p.coverLabel || '')
+      + fld(t.f_blog_cover_version, 'blog.' + bi + '.coverVersion', p.coverVersion || '')
+      + '</div>'
       + fldArea(t.f_blog_excerpt, 'blog.' + bi + '.excerpt.' + al, (p.excerpt && p.excerpt[al]) || '', 2)
       + fldArea(t.f_blog_body, 'blog.' + bi + '.body.' + al, (p.body && p.body[al]) || '', 8)
     ) : '<p class="hint" style="font-size:13.5px;">' + t.admin_no_posts + '</p>');
@@ -868,6 +881,30 @@ function bindPanel() {
         Admin.blogIdx = Math.max(0, Admin.blogIdx - 1);
         await saveNow(); renderPanel();
         break;
+      case 'blog-cover-search': {
+        const errEl = document.getElementById('blog-cover-err');
+        if (errEl) errEl.style.display = 'none';
+        const p2 = (C.blog || [])[Admin.blogIdx];
+        const kwInp = document.getElementById('blog-cover-kw');
+        if (!p2 || !kwInp) return;
+        if (!Admin.unsplashKey) { if (errEl) { errEl.textContent = t.f_blog_cover_key_missing; errEl.style.display = 'block'; } return; }
+        const kw = (kwInp.value || '').trim();
+        if (!kw) return;
+        const btn = document.getElementById('blog-cover-btn');
+        if (btn) { btn.disabled = true; btn.textContent = t.f_blog_cover_searching; }
+        try {
+          const url = await unsplashImage(kw);
+          if (url) { p2.cover = url; await saveNow(); renderPanel(); }
+          else {
+            if (errEl) { errEl.textContent = t.f_blog_cover_not_found; errEl.style.display = 'block'; }
+            if (btn) { btn.disabled = false; btn.textContent = t.f_blog_cover_find; }
+          }
+        } catch (err) {
+          if (errEl) { errEl.textContent = t.ai_err + ': ' + (err.message || err); errEl.style.display = 'block'; }
+          if (btn) { btn.disabled = false; btn.textContent = t.f_blog_cover_find; }
+        }
+        break;
+      }
       case 'add-member':
         C.team.push({ name: t.admin_new_member, handle: 'handle', role: { tr: 'Geliştirici', en: 'Developer' }, linkedin: '', initials: 'XX' });
         await saveNow(); renderPanel();

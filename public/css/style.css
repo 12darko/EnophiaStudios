@@ -528,6 +528,8 @@ textarea.input { resize: vertical; }
 .key-row { display: flex; gap: 10px; align-items: stretch; }
 .key-row .input { flex: 1; }
 .key-row .tb-btn { white-space: nowrap; }
+.cover-preview { display: block; width: 100%; max-width: 380px; height: 150px; object-fit: cover; border-radius: 12px; border: 1px solid var(--card-border); }
+.cover-preview.empty { display: flex; align-items: center; justify-content: center; color: var(--muted-3); font-size: 13px; background: rgba(255,255,255,0.03); }
 .seg { display: inline-flex; gap: 4px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 4px; }
 .seg-btn { cursor: pointer; padding: 8px 16px; border-radius: 7px; font-size: 13px; border: none; background: transparent; color: var(--muted); font-family: inherit; font-weight: 500; }
 .seg-btn.on { background: rgba(155,108,216,0.2); color: #c9a9ec; }
