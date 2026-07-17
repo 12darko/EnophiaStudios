@@ -55,13 +55,19 @@ button { font-family: inherit; }
   display: flex; align-items: center; gap: 18px;
 }
 .brand { display: flex; align-items: center; gap: 10px; background: none; border: none; cursor: pointer; padding: 0; color: var(--ink); }
+.brand-mark-img {
+  width: 35px; height: 36px; flex: 0 0 auto;
+  background: url('/assets/logo.png') no-repeat -42px -11px;
+  background-size: 115px auto;
+}
 .brand-mark {
   width: 26px; height: 26px; border-radius: 7px;
   background: linear-gradient(140deg, var(--accent), var(--accent-dark));
   display: flex; align-items: center; justify-content: center;
   font-family: 'Instrument Serif', serif; font-size: 18px; color: var(--bg); font-weight: 600;
 }
-.brand-name { font-weight: 600; letter-spacing: 0.16em; font-size: 14px; }
+.brand-name { font-weight: 600; letter-spacing: 0.16em; font-size: 14px; color: var(--accent); }
+.brand-studios { font-size: 10px; letter-spacing: 0.24em; margin-left: 6px; opacity: 0.9; }
 .nav-links { display: flex; gap: 22px; margin-left: auto; align-items: center; }
 .nav-links a, .nav-links button {
   background: none; border: none; cursor: pointer; padding: 0;
@@ -259,6 +265,7 @@ a.store-card.yt:hover { border-color: rgba(196,84,74,0.45); }
 .page-post { max-width: 760px; margin: 0 auto; padding: 40px 24px 90px; }
 .page-kicker { font-size: 12.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 16px; }
 .page-title { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: clamp(42px, 6vw, 72px); line-height: 1.02; margin: 0 0 28px; letter-spacing: -0.5px; }
+.about-logo { display: block; width: 100%; max-width: 320px; height: auto; margin: 0 auto 40px; }
 .about-lead { font-size: 21px; line-height: 1.6; color: var(--body-soft); margin: 0 0 48px; font-family: 'Instrument Serif', serif; font-style: italic; }
 .about-grid { display: grid; gap: 36px; }
 .about-grid h2 { font-size: 22px; font-weight: 600; margin: 0 0 12px; }
@@ -294,6 +301,17 @@ a.store-card.yt:hover { border-color: rgba(196,84,74,0.45); }
 .blog-item p { font-size: 14.5px; line-height: 1.55; color: var(--muted); margin: 0; }
 .blog-item .read { margin-top: 6px; font-size: 13px; font-weight: 600; color: var(--accent); display: flex; align-items: center; gap: 6px; }
 .blog-empty { color: var(--muted-3); font-size: 15px; }
+.blog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 400px)); gap: 22px; justify-content: center; }
+.blog-card { text-decoration: none; color: var(--ink); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .2s, transform .2s; }
+.blog-card:hover { border-color: rgba(224,168,94,0.4); transform: translateY(-3px); }
+.blog-card-cover { position: relative; height: 172px; background-size: cover; background-position: center; }
+.blog-card-cover.nocover { display: flex; align-items: center; justify-content: center; background: radial-gradient(120% 120% at 30% 20%, rgba(224,168,94,0.22), transparent 60%), linear-gradient(160deg,#161a20,#0d1014); }
+.blog-card-cover.nocover span { font-family: 'Instrument Serif', serif; font-size: 60px; color: rgba(255,255,255,0.18); }
+.blog-card-body { padding: 18px 20px 22px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.blog-card-body .date { font-size: 12.5px; color: var(--muted-2); }
+.blog-card-body h3 { font-size: 19px; margin: 0; font-weight: 600; line-height: 1.3; }
+.blog-card-body p { font-size: 14px; line-height: 1.55; color: var(--muted); margin: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.blog-card-body .read { margin-top: auto; padding-top: 4px; font-size: 13px; font-weight: 600; color: var(--accent); }
 
 /* ===== Yenilikler (latest posts) strip — manual horizontal scroll, no auto-rotate ===== */
 .updates-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
@@ -308,7 +326,7 @@ a.store-card.yt:hover { border-color: rgba(196,84,74,0.45); }
   transition: border-color .2s, transform .2s;
 }
 .update-card:hover { border-color: rgba(224,168,94,0.4); transform: translateY(-3px); }
-.update-cover { height: 150px; background-size: cover; background-position: center; }
+.update-cover { position: relative; height: 150px; background-size: cover; background-position: center; }
 .update-cover.nocover { display: flex; align-items: center; justify-content: center; background: radial-gradient(120% 120% at 30% 20%, rgba(224,168,94,0.25), transparent 60%), linear-gradient(160deg,#161a20,#0d1014); }
 .update-cover.nocover span { font-family: 'Instrument Serif', serif; font-size: 56px; color: rgba(255,255,255,0.18); }
 .update-body { padding: 18px 20px 22px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
@@ -318,6 +336,34 @@ a.store-card.yt:hover { border-color: rgba(196,84,74,0.45); }
 .update-read { margin-top: auto; padding-top: 4px; font-size: 13px; font-weight: 600; color: var(--accent); }
 @media (max-width: 480px) { .update-card { flex-basis: 82vw; max-width: 82vw; } }
 .post-cover { width: 100%; border-radius: 16px; border: 1px solid var(--card-border); margin-bottom: 24px; display: block; }
+.post-cover-wrap { position: relative; }
+.post-cover-wrap .post-cover { margin-bottom: 24px; }
+
+/* ===== blog cover text overlay (label + version badge) ===== */
+.cover-tag {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 15px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(10,12,16,0) 0%, rgba(10,12,16,0.7) 100%);
+  border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;
+}
+.cover-tag-label {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 14px; letter-spacing: .4px; text-transform: uppercase;
+  color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,0.55);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cover-tag-ver {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 12px; letter-spacing: .5px; color: #17120a;
+  background: linear-gradient(180deg, #e7b660, #d09a3d);
+  padding: 3px 9px; border-radius: 999px; flex: 0 0 auto;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.update-cover .cover-tag { border-radius: 0; }
+.post-cover-wrap .cover-tag { padding: 16px 18px; bottom: 24px; }
+.post-cover-wrap .cover-tag-label { font-size: 19px; }
+.post-cover-wrap .cover-tag-ver { font-size: 13px; padding: 4px 11px; }
 .post-date { font-size: 12.5px; color: var(--muted-2); }
 .post-title { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: clamp(36px, 5.5vw, 58px); line-height: 1.05; margin: 10px 0 26px; letter-spacing: -0.4px; }
 .post-body { font-size: 16px; line-height: 1.8; color: var(--body-soft); white-space: pre-wrap; margin: 0; }

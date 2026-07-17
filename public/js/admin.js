@@ -237,10 +237,38 @@ async function githubContext(owner, repo) {
     + 'README (kisaltilmis):\n' + (readme || '-');
 }
 
+// Best-effort: read the project's version from common files for the cover badge.
+// Returns e.g. "0.3.0" or "" if nothing is found.
+async function detectVersion(owner, repo) {
+  const H = ghHeaders(owner, repo);
+  const cbase = 'https://api.github.com/repos/' + owner + '/' + repo + '/contents/';
+  const decode = (b64) => {
+    const s = String(b64 || '').replace(/\n/g, '');
+    try { return decodeURIComponent(escape(atob(s))); } catch (e) { try { return atob(s); } catch (e2) { return ''; } }
+  };
+  const read = async (path) => {
+    try {
+      const r = await fetch(cbase + path, { headers: H });
+      if (!r.ok) return '';
+      const j = await r.json();
+      return j && j.content ? decode(j.content) : '';
+    } catch (e) { return ''; }
+  };
+  const pkg = await read('package.json');
+  if (pkg) { try { const v = JSON.parse(pkg).version; if (v) return String(v).trim(); } catch (e) {} }
+  const godot = await read('project.godot');
+  if (godot) { const m = godot.match(/config\/version\s*=\s*"([^"]+)"/); if (m) return m[1].trim(); }
+  const unity = await read('ProjectSettings/ProjectSettings.asset');
+  if (unity) { const m = unity.match(/bundleVersion:\s*(.+)/); if (m) return m[1].trim(); }
+  return '';
+}
+
 const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
-  + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
+  + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query","cover_label","version"}. '
   + 'title: short and catchy. excerpt: 1-2 sentences. body: 3-6 short paragraphs, plain text (no markdown). '
+  + 'cover_label: a SHORT label for the cover image — the game/project name or 2-3 punchy words (e.g. "Fight League"). '
+  + 'version: the project version ONLY if clearly present in the given context (PROJECT VERSION line, README or commit messages), like "0.3.0" — otherwise empty "". NEVER invent a version. '
   + 'TONE: write like a REAL indie dev casually sharing progress with players — warm, natural, first person plural ("biz"/"we"), a little personality and humour. NOT corporate, NOT marketing hype, NOT robotic. Avoid AI/marketing cliches ("heyecanla duyuruyoruz", "oyun dunyasinda", "stay tuned", "thrilled to announce", "delve", "game-changer", "bir adim daha"). Short, human sentences, like talking to a friend. '
   + 'image_query: 2-4 English keywords describing an ATMOSPHERIC, CINEMATIC scene or environment that suits a dark-fantasy / mythology indie game — NOT the technical devlog topic. '
   + 'Good examples: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk", "stormy sea mythology", "cinematic night sky stars", "abstract glowing particles". '
@@ -332,6 +360,8 @@ async function applyActions(actions) {
       App.content.blog.unshift({
         slug: slugify((a.title_en || a.title_tr || 'post') + '-' + Date.now().toString(36)),
         date: new Date().toISOString().slice(0, 10), cover: cover,
+        coverLabel: (a.cover_label || '').toString().trim(),
+        coverVersion: (a.version || '').toString().trim(),
         title: { tr: a.title_tr || '', en: a.title_en || '' },
         excerpt: { tr: a.excerpt_tr || '', en: a.excerpt_en || '' },
         body: { tr: a.body_tr || '', en: a.body_en || '' },
@@ -346,6 +376,72 @@ async function applyActions(actions) {
     }
   }
   await saveNow();
+}
+
+// Repo tracking: generate devlog posts for tracked repos.
+// force=false → only new commits, skip trivial ones (used by the scheduled cron too).
+// force=true  → ignore lastSeen AND the skip filter, so you can regenerate a post you
+//               deleted even when there's no new commit.
+async function runRepoCheck(force, btnId) {
+  const t = App.t, C = App.content;
+  const okEl = document.getElementById('repo-ok'), errEl = document.getElementById('repo-err');
+  if (okEl) okEl.style.display = 'none';
+  if (errEl) errEl.style.display = 'none';
+  if (!C.autotrack) C.autotrack = { repos: [], lastSeen: {} };
+  if (!C.autotrack.lastSeen) C.autotrack.lastSeen = {};
+  const repos = (C.autotrack.repos || []).filter(r => r.url);
+  if (!repos.length) { if (errEl) { errEl.textContent = t.autotrack_no_repos; errEl.style.display = 'block'; } return; }
+  if (!activeLlmKey()) { if (errEl) { errEl.textContent = t.chat_key_missing; errEl.style.display = 'block'; } return; }
+  const cbtn = document.getElementById(btnId);
+  if (cbtn) { cbtn.disabled = true; cbtn.textContent = t.autotrack_checking; }
+  let made = 0, checked = 0, skipped = 0; const errs = [];
+  for (const r of repos) {
+    const m = String(r.url).match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
+    if (!m) continue;
+    const owner = m[1], repo = m[2].replace(/\.git$/, ''), key = owner + '/' + repo;
+    checked++;
+    try {
+      const head = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/commits?per_page=1', { headers: ghHeaders(owner, repo) }).then(x => x.json());
+      if (!Array.isArray(head)) { // 404/401/403 → private repo without a valid token, or rate limit
+        errs.push(key + ': ' + ((head && head.message) || 'repo okunamadı') + ' (private ise token gir)');
+        continue;
+      }
+      const sha = head[0] ? head[0].sha : null;
+      if (!sha) continue;
+      if (!force && C.autotrack.lastSeen[key] === sha) continue; // no new commit
+      const ctx = await githubContext(owner, repo);
+      const detectedVer = await detectVersion(owner, repo);
+      const langLine = r.lang === 'tr' ? 'Öncelikli dil Türkçe.' : r.lang === 'en' ? 'Primary language English.' : 'TR + EN.';
+      const verLine = detectedVer ? '\nPROJECT VERSION: ' + detectedVer : '';
+      const sys = BLOG_SYS + '\n' + langLine + (force ? '' : '\n' + REPO_SKIP_RULE);
+      const ask = force ? 'Write a fresh devlog post about the recent progress.' : 'Decide if this is worth a devlog post; if yes, write it.';
+      const obj = parseJsonLoose(await llmChat(sys, [{ role: 'user', content: 'GitHub repo activity:\n' + ctx + verLine + '\n\n' + ask }], true));
+      if (!force && obj && obj.skip === true) { C.autotrack.lastSeen[key] = sha; skipped++; continue; } // trivial commits — no post
+      let cover = '';
+      if (obj.image_query && Admin.unsplashKey) { try { cover = await unsplashImage(obj.image_query); } catch (e) {} }
+      if (!C.blog) C.blog = [];
+      C.blog.unshift({
+        slug: slugify((obj.title_en || obj.title_tr || repo) + '-' + Date.now().toString(36)),
+        date: new Date().toISOString().slice(0, 10), cover: cover,
+        coverLabel: (obj.cover_label || repo || '').toString().trim(),
+        coverVersion: (detectedVer || obj.version || '').toString().trim(),
+        title: { tr: obj.title_tr || '', en: obj.title_en || '' },
+        excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
+        body: { tr: obj.body_tr || '', en: obj.body_en || '' },
+      });
+      C.autotrack.lastSeen[key] = sha;
+      made++;
+    } catch (e) { errs.push(key + ': ' + (e.message || e)); }
+  }
+  await saveNow();
+  renderPanel();
+  const fresh = document.getElementById('repo-ok'), freshErr = document.getElementById('repo-err');
+  if (fresh) {
+    const msg = made ? (made + ' ' + t.autotrack_result_1 + ' (' + checked + ' repo)')
+      : (skipped ? (skipped + ' ' + t.autotrack_skipped) : t.autotrack_none);
+    fresh.textContent = msg; fresh.style.display = 'block';
+  }
+  if (errs.length && freshErr) { freshErr.textContent = t.ai_err + ': ' + errs.join(' · '); freshErr.style.display = 'block'; }
 }
 
 // ---------------- Firebase not configured yet: show setup steps ----------------
@@ -627,7 +723,11 @@ function renderPanel() {
       + '<p class="form-ok" id="github-msg" style="display:' + (Admin.githubToken ? 'block' : 'none') + ';">' + t.ai_key_saved + '</p></div>'
     + repoRows
     + '<button type="button" class="mini-add" data-action="repo-add">' + t.autotrack_add + '</button>'
-    + '<div style="margin-top:22px;"><button type="button" class="tb-btn tb-primary" id="repo-check-btn" data-action="repo-check">' + t.autotrack_check + '</button></div>'
+    + '<div style="margin-top:22px; display:flex; gap:10px; flex-wrap:wrap;">'
+      + '<button type="button" class="tb-btn tb-primary" id="repo-check-btn" data-action="repo-check">' + t.autotrack_check + '</button>'
+      + '<button type="button" class="tb-btn tb-ghost" id="repo-regen-btn" data-action="repo-regen">' + t.autotrack_regen + '</button>'
+      + '</div>'
+    + '<p class="hint" style="margin:8px 0 0; font-size:12px;">' + t.autotrack_regen_note + '</p>'
     + '<p class="form-error" id="repo-err" style="display:none;"></p>'
     + '<p class="form-ok" id="repo-ok" style="display:none;"></p>';
 
@@ -949,60 +1049,12 @@ function bindPanel() {
         }
         break;
       }
-      case 'repo-check': {
-        const okEl = document.getElementById('repo-ok'), errEl = document.getElementById('repo-err');
-        okEl.style.display = 'none'; errEl.style.display = 'none';
-        if (!C.autotrack) C.autotrack = { repos: [], lastSeen: {} };
-        if (!C.autotrack.lastSeen) C.autotrack.lastSeen = {};
-        const repos = (C.autotrack.repos || []).filter(r => r.url);
-        if (!repos.length) { errEl.textContent = t.autotrack_no_repos; errEl.style.display = 'block'; return; }
-        if (!activeLlmKey()) { errEl.textContent = t.chat_key_missing; errEl.style.display = 'block'; return; }
-        const cbtn = document.getElementById('repo-check-btn');
-        cbtn.disabled = true; cbtn.textContent = t.autotrack_checking;
-        let made = 0, checked = 0, skipped = 0; const errs = [];
-        for (const r of repos) {
-          const m = String(r.url).match(/github\.com\/([\w.-]+)\/([\w.-]+)/i);
-          if (!m) continue;
-          const owner = m[1], repo = m[2].replace(/\.git$/, ''), key = owner + '/' + repo;
-          checked++;
-          try {
-            const head = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/commits?per_page=1', { headers: ghHeaders(owner, repo) }).then(x => x.json());
-            if (!Array.isArray(head)) { // 404/401/403 → private repo without a valid token, or rate limit
-              errs.push(key + ': ' + ((head && head.message) || 'repo okunamadı') + ' (private ise token gir)');
-              continue;
-            }
-            const sha = head[0] ? head[0].sha : null;
-            if (!sha || C.autotrack.lastSeen[key] === sha) continue; // no new commit
-            const ctx = await githubContext(owner, repo);
-            const langLine = r.lang === 'tr' ? 'Öncelikli dil Türkçe.' : r.lang === 'en' ? 'Primary language English.' : 'TR + EN.';
-            const obj = parseJsonLoose(await llmChat(BLOG_SYS + '\n' + langLine + '\n' + REPO_SKIP_RULE,
-              [{ role: 'user', content: 'GitHub repo activity:\n' + ctx + '\n\nDecide if this is worth a devlog post; if yes, write it.' }], true));
-            if (obj && obj.skip === true) { C.autotrack.lastSeen[key] = sha; skipped++; continue; } // trivial commits — no post
-            let cover = '';
-            if (obj.image_query && Admin.unsplashKey) { try { cover = await unsplashImage(obj.image_query); } catch (e) {} }
-            if (!C.blog) C.blog = [];
-            C.blog.unshift({
-              slug: slugify((obj.title_en || obj.title_tr || repo) + '-' + Date.now().toString(36)),
-              date: new Date().toISOString().slice(0, 10), cover: cover,
-              title: { tr: obj.title_tr || '', en: obj.title_en || '' },
-              excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
-              body: { tr: obj.body_tr || '', en: obj.body_en || '' },
-            });
-            C.autotrack.lastSeen[key] = sha;
-            made++;
-          } catch (e) { errs.push(key + ': ' + (e.message || e)); }
-        }
-        await saveNow();
-        renderPanel();
-        const fresh = document.getElementById('repo-ok'), freshErr = document.getElementById('repo-err');
-        if (fresh) {
-          let msg = made ? (made + ' ' + t.autotrack_result_1 + ' (' + checked + ' repo)')
-            : (skipped ? (skipped + ' ' + t.autotrack_skipped) : t.autotrack_none);
-          fresh.textContent = msg; fresh.style.display = 'block';
-        }
-        if (errs.length && freshErr) { freshErr.textContent = t.ai_err + ': ' + errs.join(' · '); freshErr.style.display = 'block'; }
+      case 'repo-check':
+        await runRepoCheck(false, 'repo-check-btn');
         break;
-      }
+      case 'repo-regen':
+        await runRepoCheck(true, 'repo-regen-btn');
+        break;
       case 'ai-generate': {
         const okEl = document.getElementById('ai-ok'), errEl = document.getElementById('ai-err');
         okEl.style.display = 'none'; errEl.style.display = 'none';
@@ -1025,6 +1077,8 @@ function bindPanel() {
           C.blog.unshift({
             slug: slugify((obj.title_en || obj.title_tr || 'post') + '-' + Date.now().toString(36)),
             date: new Date().toISOString().slice(0, 10), cover: cover,
+            coverLabel: (obj.cover_label || '').toString().trim(),
+            coverVersion: (obj.version || '').toString().trim(),
             title: { tr: obj.title_tr || '', en: obj.title_en || '' },
             excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
             body: { tr: obj.body_tr || '', en: obj.body_en || '' },

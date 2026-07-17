@@ -223,6 +223,18 @@ function renderNav() {
 }
 
 // ---------------- views ----------------
+// Text bindings for a blog cover image: a short label + a version badge.
+function coverOverlay(p) {
+  const label = esc((p.coverLabel || '').toString().trim());
+  let ver = String(p.coverVersion || '').trim();
+  if (ver && !/^v/i.test(ver)) ver = 'v' + ver;
+  if (!label && !ver) return '';
+  return '<div class="cover-tag">'
+    + (label ? '<span class="cover-tag-label">' + label + '</span>' : '')
+    + (ver ? '<span class="cover-tag-ver">' + esc(ver) + '</span>' : '')
+    + '</div>';
+}
+
 function gameCard(lg) {
   // real <a href> links so crawlers can discover detail pages
   const href = lg.hasDetail
@@ -281,7 +293,7 @@ function viewHome() {
     + posts.slice(0, uCount).map(p =>
         '<a class="update-card" href="/blog/' + encodeURIComponent(p.slug) + '">'
         + (p.cover
-            ? '<div class="update-cover" style="background-image:linear-gradient(180deg,rgba(10,12,16,0) 40%,rgba(10,12,16,0.55)),url(\'' + esc(p.cover) + '\');"></div>'
+            ? '<div class="update-cover" style="background-image:linear-gradient(180deg,rgba(10,12,16,0) 40%,rgba(10,12,16,0.55)),url(\'' + esc(p.cover) + '\');">' + coverOverlay(p) + '</div>'
             : '<div class="update-cover nocover"><span>' + esc(((p.title && p.title[lang]) || 'E').charAt(0)) + '</span></div>')
         + '<div class="update-body">'
         + '<span class="update-date">' + esc(p.date) + '</span>'
@@ -394,6 +406,7 @@ function viewAbout() {
     + '</div>'
   ).join('');
   return '<main class="page-narrow">'
+    + '<img class="about-logo" src="/assets/logo.png" alt="Enophia Studios">'
     + '<div class="page-kicker">' + t.about_kicker + '</div>'
     + '<h1 class="page-title">' + t.about_title + '</h1>'
     + '<p class="about-lead">' + esc(C.about.lead[lang]) + '</p>'
@@ -417,18 +430,23 @@ function viewBlog() {
   const t = App.t, C = App.content, lang = App.lang;
   const posts = (C.blog || []);
   const list = posts.map(p =>
-    '<a class="blog-item" href="/blog/' + encodeURIComponent(p.slug) + '">'
+    '<a class="blog-card" href="/blog/' + encodeURIComponent(p.slug) + '">'
+    + (p.cover
+        ? '<div class="blog-card-cover" style="background-image:linear-gradient(180deg,rgba(10,12,16,0) 40%,rgba(10,12,16,0.55)),url(\'' + esc(p.cover) + '\');">' + coverOverlay(p) + '</div>'
+        : '<div class="blog-card-cover nocover"><span>' + esc(((p.title && p.title[lang]) || 'E').charAt(0)) + '</span></div>')
+    + '<div class="blog-card-body">'
     + '<span class="date">' + esc(p.date) + '</span>'
     + '<h3>' + esc((p.title && p.title[lang]) || '') + '</h3>'
     + '<p>' + esc((p.excerpt && p.excerpt[lang]) || '') + '</p>'
     + '<span class="read">' + t.blog_read + ' <span aria-hidden="true">→</span></span>'
+    + '</div>'
     + '</a>'
   ).join('');
   return '<main class="page-blog">'
     + '<div class="page-kicker">' + t.nav_blog + '</div>'
     + '<h1 class="page-title" style="margin-bottom:16px;">' + t.blog_title + '</h1>'
     + '<p class="blog-sub">' + t.blog_sub + '</p>'
-    + (posts.length ? '<div class="blog-list">' + list + '</div>' : '<p class="blog-empty">' + t.blog_empty + '</p>')
+    + (posts.length ? '<div class="blog-grid">' + list + '</div>' : '<p class="blog-empty">' + t.blog_empty + '</p>')
     + '</main>';
 }
 
@@ -438,7 +456,7 @@ function viewPost(slug) {
   if (!p) return '<main class="page-post"><p class="blog-empty">' + t.blog_empty + '</p></main>';
   return '<main class="page-post">'
     + '<a class="btn-back" href="/blog">← ' + t.blog_back + '</a>'
-    + (p.cover ? '<img class="post-cover" src="' + esc(p.cover) + '" alt="">' : '')
+    + (p.cover ? '<div class="post-cover-wrap"><img class="post-cover" src="' + esc(p.cover) + '" alt="">' + coverOverlay(p) + '</div>' : '')
     + '<span class="post-date">' + esc(p.date) + '</span>'
     + '<h1 class="post-title">' + esc((p.title && p.title[lang]) || '') + '</h1>'
     + '<p class="post-body">' + esc((p.body && p.body[lang]) || '') + '</p>'

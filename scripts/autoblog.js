@@ -40,8 +40,10 @@ function ghHeaders(secrets, owner, repo) {
 
 const BLOG_SYS = 'You are the devlog writer for Enophia Studios, an independent game studio. '
   + 'Write ONE blog post and return ONLY valid minified JSON with exactly these fields: '
-  + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query"}. '
+  + '{"title_tr","title_en","excerpt_tr","excerpt_en","body_tr","body_en","image_query","cover_label","version"}. '
   + 'title: short and catchy. excerpt: 1-2 sentences. body: 4-6 short paragraphs, plain text (no markdown). '
+  + 'cover_label: a SHORT label for the cover image — the game/project name or 2-3 punchy words (e.g. "Fight League"). '
+  + 'version: the project version ONLY if clearly present in the given context (PROJECT VERSION line, README or commit messages), like "0.3.0" — otherwise empty "". NEVER invent a version. '
   + 'TONE: write like a REAL indie dev casually sharing progress with players — warm, natural, first person plural ("biz"/"we"), a little personality and humour. NOT corporate, NOT marketing hype, NOT robotic. Avoid AI/marketing cliches ("heyecanla duyuruyoruz", "oyun dunyasinda", "stay tuned", "thrilled to announce", "delve", "game-changer", "bir adim daha"). Short, human sentences, like talking to a friend. '
   + 'image_query: 2-4 English keywords describing an ATMOSPHERIC, CINEMATIC scene or environment that suits a dark-fantasy / mythology indie game — NOT the technical devlog topic. '
   + 'Good examples: "dark fantasy forest fog", "ancient temple ruins", "misty mountains dusk", "stormy sea mythology", "cinematic night sky stars", "abstract glowing particles". '
@@ -79,6 +81,26 @@ async function githubContext(owner, repo, headers) {
       + '\nDil: ' + (info.language || '-') + '\nSON COMMITLER:\n' + (commitLines || '-')
       + '\n\nREADME (kisaltilmis):\n' + (readme || '-'),
   };
+}
+
+// Best-effort: read the project version from common files for the cover badge.
+async function detectVersion(headers, owner, repo) {
+  const cbase = 'https://api.github.com/repos/' + owner + '/' + repo + '/contents/';
+  const read = async (path) => {
+    try {
+      const r = await fetch(cbase + path, { headers });
+      if (!r.ok) return '';
+      const j = await r.json();
+      return j && j.content ? Buffer.from(j.content, 'base64').toString('utf8') : '';
+    } catch (e) { return ''; }
+  };
+  const pkg = await read('package.json');
+  if (pkg) { try { const v = JSON.parse(pkg).version; if (v) return String(v).trim(); } catch (e) {} }
+  const godot = await read('project.godot');
+  if (godot) { const m = godot.match(/config\/version\s*=\s*"([^"]+)"/); if (m) return m[1].trim(); }
+  const unity = await read('ProjectSettings/ProjectSettings.asset');
+  if (unity) { const m = unity.match(/bundleVersion:\s*(.+)/); if (m) return m[1].trim(); }
+  return '';
 }
 
 function parseLoose(t) {
@@ -152,17 +174,22 @@ function slugify(s) {
     if (!m) continue;
     const owner = m[1], repo = m[2].replace(/\.git$/, ''), key = owner + '/' + repo;
     try {
-      const ctx = await githubContext(owner, repo, ghHeaders(secrets, owner, repo));
+      const H = ghHeaders(secrets, owner, repo);
+      const ctx = await githubContext(owner, repo, H);
       if (!ctx.headSha || lastSeen[key] === ctx.headSha) { console.log(key, '→ no new commit'); continue; }
+      const detectedVer = await detectVersion(H, owner, repo);
       const langLine = r.lang === 'tr' ? 'Primary Turkish.' : r.lang === 'en' ? 'Primary English.' : 'TR + EN.';
+      const verLine = detectedVer ? '\nPROJECT VERSION: ' + detectedVer : '';
       const obj = parseLoose(await llmJson(provider, secrets, BLOG_SYS + '\n' + langLine + '\n' + REPO_SKIP_RULE,
-        'GitHub repo activity:\n' + ctx.text + '\n\nDecide if this is worth a devlog post; if yes, write it.'));
+        'GitHub repo activity:\n' + ctx.text + verLine + '\n\nDecide if this is worth a devlog post; if yes, write it.'));
       if (obj && obj.skip === true) { lastSeen[key] = ctx.headSha; changed = true; console.log(key, '→ skipped (minor commits)'); continue; }
       let cover = '';
       if (obj.image_query && secrets.unsplashKey) cover = await unsplash(secrets.unsplashKey, obj.image_query);
       newPosts.push({
         slug: slugify((obj.title_en || obj.title_tr || repo) + '-' + Date.now().toString(36)),
         date: new Date().toISOString().slice(0, 10), cover: cover,
+        coverLabel: (obj.cover_label || repo || '').toString().trim(),
+        coverVersion: (detectedVer || obj.version || '').toString().trim(),
         title: { tr: obj.title_tr || '', en: obj.title_en || '' },
         excerpt: { tr: obj.excerpt_tr || '', en: obj.excerpt_en || '' },
         body: { tr: obj.body_tr || '', en: obj.body_en || '' },
